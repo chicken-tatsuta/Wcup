@@ -1,4 +1,5 @@
 .DS_Store
+fifa_results.py
 node_modules
 .next
 .vercel
