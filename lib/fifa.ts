@@ -1,58 +1,9 @@
 import picks from "@/data/picks.json";
+import { getCountryLabel } from "@/lib/countries";
 
 const API_URL = "https://api.fifa.com/api/v3/calendar/matches";
 const WORLD_CUP_2026_SEASON_ID = "285023";
-
-const PICK_NAME_TO_COUNTRY_CODE: Record<string, string> = {
-  フランス: "FRA",
-  ベルギー: "BEL",
-  アメリカ: "USA",
-  ノルウェー: "NOR",
-  カナダ: "CAN",
-  南アフリカ: "RSA",
-  ボスにあ: "BIH",
-  イラク: "IRQ",
-  ハイチ: "HAI",
-  スペイン: "ESP",
-  メキシコ: "MEX",
-  セネガル: "SEN",
-  日本: "JPN",
-  エクアドル: "ECU",
-  サウジアラビア: "KSA",
-  パラグアイ: "PAR",
-  スコットランド: "SCO",
-  アルジェリア: "ALG",
-  カーボベルデ: "CPV",
-  イングランド: "ENG",
-  ポルトガル: "POR",
-  イラン: "IRN",
-  モロッコ: "MAR",
-  オーストラリア: "AUS",
-  エジプト: "EGY",
-  ウズベキスタン: "UZB",
-  チュニジア: "TUN",
-  コンゴ民主共和国: "COD",
-  トルコ: "TUR",
-  アルゼンチン: "ARG",
-  オランダ: "NED",
-  クロアチア: "CRO",
-  韓国: "KOR",
-  カタール: "QAT",
-  コートジボワール: "CIV",
-  パナマ: "PAN",
-  ヨルダン: "JOR",
-  キュラソー: "CUW",
-  ブラジル: "BRA",
-  ドイツ: "GER",
-  ウルグアイ: "URU",
-  コロンビア: "COL",
-  オーストリア: "AUT",
-  スイス: "SUI",
-  スウェーデン: "SWE",
-  チェコ: "CZE",
-  ガーナ: "GHA",
-  ニュージーランド: "NZL",
-};
+export const FIFA_MATCHES_TAG = "fifa-matches";
 
 const STAGE_POINTS = {
   none: 0,
@@ -101,8 +52,11 @@ type StandingRow = {
 
 type ParticipantPick = {
   country: string;
-  countryCode: string | null;
+  countryCode: string;
   progressLabel: string;
+  progressPoints: number;
+  winPoints: number;
+  wins: number;
   points: number;
 };
 
@@ -265,20 +219,54 @@ function progressLabel(progressKey: ProgressKey) {
   }
 }
 
+function getWinCounts(matches: Match[]) {
+  const winCounts = new Map<string, number>();
+
+  const addWin = (countryCode?: string) => {
+    if (!countryCode) return;
+    winCounts.set(countryCode, (winCounts.get(countryCode) ?? 0) + 1);
+  };
+
+  for (const match of matches) {
+    const homeScore = match.Home?.Score;
+    const awayScore = match.Away?.Score;
+
+    if (homeScore == null || awayScore == null) continue;
+
+    if (match.Winner && match.Winner === match.Home?.IdTeam) {
+      addWin(match.Home?.IdCountry);
+    } else if (match.Winner && match.Winner === match.Away?.IdTeam) {
+      addWin(match.Away?.IdCountry);
+    } else if (homeScore > awayScore) {
+      addWin(match.Home?.IdCountry);
+    } else if (awayScore > homeScore) {
+      addWin(match.Away?.IdCountry);
+    }
+  }
+
+  return winCounts;
+}
+
 function getParticipantScores(matches: Match[]): ParticipantScore[] {
   const tournamentProgress = getTournamentProgress(matches);
+  const winCounts = getWinCounts(matches);
 
   return picks
     .map((entry) => {
-      const participantPicks = entry.countries.map((country) => {
-        const countryCode = PICK_NAME_TO_COUNTRY_CODE[country] ?? null;
+      const participantPicks = entry.countries.map((countryCode) => {
         const progressKey = getProgressKey(countryCode, tournamentProgress);
+        const progressPoints = STAGE_POINTS[progressKey];
+        const wins = winCounts.get(countryCode) ?? 0;
+        const winPoints = wins;
 
         return {
-          country,
+          country: getCountryLabel(countryCode, "ja"),
           countryCode,
           progressLabel: progressLabel(progressKey),
-          points: STAGE_POINTS[progressKey],
+          progressPoints,
+          winPoints,
+          wins,
+          points: progressPoints + winPoints,
         };
       });
 
@@ -307,7 +295,7 @@ export async function getWorldCupDashboard() {
       Accept: "application/json",
       "User-Agent": "Mozilla/5.0",
     },
-    next: { revalidate: 900 },
+    next: { revalidate: 900, tags: [FIFA_MATCHES_TAG] },
   });
 
   if (!response.ok) {
@@ -405,6 +393,7 @@ export async function getWorldCupDashboard() {
       { label: "ベスト8", points: 5 },
       { label: "ベスト16", points: 3 },
       { label: "グループ突破", points: 1 },
+      { label: "1勝ごと", points: 1 },
     ],
     participantScores: getParticipantScores(matches),
     standings,

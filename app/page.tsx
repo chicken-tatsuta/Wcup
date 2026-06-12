@@ -1,4 +1,5 @@
 import { getWorldCupDashboard } from "@/lib/fifa";
+import { UpdateButton } from "@/app/update-button";
 
 function formatDate(date: string) {
   return new Intl.DateTimeFormat("ja-JP", {
@@ -14,11 +15,16 @@ export default async function HomePage() {
   return (
     <main className="page-shell">
       <section className="hero-card">
-        <p className="eyebrow">World Cup Picks</p>
-        <h1>5人の予想順位</h1>
-        <p className="hero-copy">
-          FIFAの試合データから各指名国の到達ラウンドを集計して、現在順位を表示しています。
-        </p>
+        <div className="hero-head">
+          <div>
+            <p className="eyebrow">World Cup Picks</p>
+            <h1>5人の予想順位</h1>
+            <p className="hero-copy">
+              FIFAの試合データから各指名国の到達ラウンドを集計して、現在順位を表示しています。
+            </p>
+          </div>
+          <UpdateButton />
+        </div>
 
         <div className="hero-stats">
           <article>
@@ -62,7 +68,12 @@ export default async function HomePage() {
                 <span>pt</span>
               </div>
               <p className="ranking-summary">
-                {participant.picks.map((pick) => pick.country).join(" / ")}
+                {participant.picks
+                  .map(
+                    (pick) =>
+                      `${pick.country} ${pick.points}pt (${pick.progressLabel}${pick.winPoints > 0 ? ` + ${pick.wins}勝` : ""})`,
+                  )
+                  .join(" / ")}
               </p>
             </article>
           ))}
