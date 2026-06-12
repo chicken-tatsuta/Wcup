@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { FIFA_MATCHES_TAG } from "@/lib/fifa";
 
 export async function POST() {
-  revalidateTag(FIFA_MATCHES_TAG);
+  revalidateTag(FIFA_MATCHES_TAG, "max");
 
   return NextResponse.json({
     ok: true,
