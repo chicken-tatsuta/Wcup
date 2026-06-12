@@ -40,6 +40,7 @@ type MatchResponse = {
 };
 
 type StandingRow = {
+  key: string;
   team: string;
   played: number;
   wins: number;
@@ -135,6 +136,14 @@ function addTeam(target: Set<string>, team?: Team) {
   if (team?.IdCountry) {
     target.add(team.IdCountry);
   }
+}
+
+function getTeamKey(team?: Team) {
+  return team?.IdCountry ?? displayTeamName(team);
+}
+
+function formatStandingTeam(team: Team | undefined, owners: Map<string, string[]>) {
+  return formatPickedTeam(team, owners);
 }
 
 function getTournamentProgress(matches: Match[]): TournamentProgress {
@@ -345,10 +354,11 @@ export async function getWorldCupDashboard() {
 
   const stats = new Map<string, Omit<StandingRow, "gd">>();
 
-  const ensure = (name: string) => {
-    if (!stats.has(name)) {
-      stats.set(name, {
-        team: name,
+  const ensure = (key: string, label: string) => {
+    if (!stats.has(key)) {
+      stats.set(key, {
+        key,
+        team: label,
         played: 0,
         wins: 0,
         draws: 0,
@@ -357,15 +367,17 @@ export async function getWorldCupDashboard() {
         ga: 0,
       });
     }
-    return stats.get(name)!;
+    return stats.get(key)!;
   };
 
   for (const match of matches) {
-    const home = displayTeamName(match.Home);
-    const away = displayTeamName(match.Away);
+    const homeKey = getTeamKey(match.Home);
+    const awayKey = getTeamKey(match.Away);
+    const home = formatStandingTeam(match.Home, countryOwners);
+    const away = formatStandingTeam(match.Away, countryOwners);
 
-    if (home !== "TBD") ensure(home);
-    if (away !== "TBD") ensure(away);
+    if (home !== "TBD") ensure(homeKey, home);
+    if (away !== "TBD") ensure(awayKey, away);
   }
 
   for (const match of matches) {
@@ -374,10 +386,12 @@ export async function getWorldCupDashboard() {
 
     if (homeScore == null || awayScore == null) continue;
 
-    const home = displayTeamName(match.Home);
-    const away = displayTeamName(match.Away);
-    const homeStats = ensure(home);
-    const awayStats = ensure(away);
+    const homeKey = getTeamKey(match.Home);
+    const awayKey = getTeamKey(match.Away);
+    const home = formatStandingTeam(match.Home, countryOwners);
+    const away = formatStandingTeam(match.Away, countryOwners);
+    const homeStats = ensure(homeKey, home);
+    const awayStats = ensure(awayKey, away);
 
     homeStats.played += 1;
     awayStats.played += 1;

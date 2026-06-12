@@ -72,8 +72,16 @@ export default async function HomePage() {
               <p className="ranking-summary">
                 {participant.picks
                   .map(
-                    (pick) =>
-                      `${pick.country} ${pick.points}pt (${pick.progressLabel}${pick.winPoints > 0 ? ` + ${pick.wins}勝` : ""})`,
+                    (pick) => {
+                      const details = [
+                        pick.progressLabel === "未獲得" ? null : pick.progressLabel,
+                        pick.winPoints > 0 ? `${pick.wins}勝` : null,
+                      ].filter(Boolean);
+
+                      return `${pick.country} ${pick.points}pt${
+                        details.length > 0 ? ` (${details.join(" + ")})` : ""
+                      }`;
+                    },
                   )
                   .join(" / ")}
               </p>
@@ -143,7 +151,7 @@ export default async function HomePage() {
               </thead>
               <tbody>
                 {dashboard.standings.map((team) => (
-                  <tr key={team.team}>
+                  <tr key={team.key}>
                     <td>{team.team}</td>
                     <td>{team.played}</td>
                     <td>{team.wins}</td>
