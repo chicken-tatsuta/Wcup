@@ -7,12 +7,12 @@ export const FIFA_MATCHES_TAG = "fifa-matches";
 
 const STAGE_POINTS = {
   none: 0,
-  groupBreakthrough: 1,
+  groupBreakthrough: 2,
   best16: 3,
-  best8: 5,
-  best4: 10,
-  runnerUp: 20,
-  champion: 30,
+  best8: 4,
+  best4: 5,
+  runnerUp: 7,
+  champion: 10,
 } as const;
 
 type Team = {
@@ -217,9 +217,9 @@ function getProgressKey(
 function progressLabel(progressKey: ProgressKey) {
   switch (progressKey) {
     case "champion":
-      return "優勝";
+      return "優勝 + 決勝進出";
     case "runnerUp":
-      return "準優勝";
+      return "決勝進出";
     case "best4":
       return "ベスト4";
     case "best8":
@@ -231,6 +231,14 @@ function progressLabel(progressKey: ProgressKey) {
     default:
       return "未獲得";
   }
+}
+
+function progressPoints(progressKey: ProgressKey) {
+  if (progressKey === "champion") {
+    return STAGE_POINTS.champion + STAGE_POINTS.runnerUp;
+  }
+
+  return STAGE_POINTS[progressKey];
 }
 
 function getWinCounts(matches: Match[]) {
@@ -284,7 +292,7 @@ function getParticipantScores(matches: Match[]): ParticipantScore[] {
     .map((entry) => {
       const participantPicks = entry.countries.map((countryCode) => {
         const progressKey = getProgressKey(countryCode, tournamentProgress);
-        const progressPoints = STAGE_POINTS[progressKey];
+        const stagePoints = progressPoints(progressKey);
         const wins = winCounts.get(countryCode) ?? 0;
         const winPoints = wins;
 
@@ -292,10 +300,10 @@ function getParticipantScores(matches: Match[]): ParticipantScore[] {
           country: getCountryLabel(countryCode, "ja"),
           countryCode,
           progressLabel: progressLabel(progressKey),
-          progressPoints,
+          progressPoints: stagePoints,
           winPoints,
           wins,
-          points: progressPoints + winPoints,
+          points: stagePoints + winPoints,
         };
       });
 
@@ -417,12 +425,12 @@ export async function getWorldCupDashboard() {
     seasonName: "FIFA World Cup 2026™",
     generatedAt: new Date().toISOString(),
     scoringRules: [
-      { label: "優勝", points: 30 },
-      { label: "準優勝", points: 20 },
-      { label: "ベスト4", points: 10 },
-      { label: "ベスト8", points: 5 },
+      { label: "優勝", points: 10 },
+      { label: "決勝進出", points: 7 },
+      { label: "ベスト4", points: 5 },
+      { label: "ベスト8", points: 4 },
       { label: "ベスト16", points: 3 },
-      { label: "グループ突破", points: 1 },
+      { label: "グループ突破", points: 2 },
       { label: "1勝ごと", points: 1 },
     ],
     participantScores: getParticipantScores(matches),
