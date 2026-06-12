@@ -1,11 +1,75 @@
+import picks from "@/data/picks.json";
+
 const API_URL = "https://api.fifa.com/api/v3/calendar/matches";
 const WORLD_CUP_2026_SEASON_ID = "285023";
+
+const PICK_NAME_TO_COUNTRY_CODE: Record<string, string> = {
+  フランス: "FRA",
+  ベルギー: "BEL",
+  アメリカ: "USA",
+  ノルウェー: "NOR",
+  カナダ: "CAN",
+  南アフリカ: "RSA",
+  ボスにあ: "BIH",
+  イラク: "IRQ",
+  ハイチ: "HAI",
+  スペイン: "ESP",
+  メキシコ: "MEX",
+  セネガル: "SEN",
+  日本: "JPN",
+  エクアドル: "ECU",
+  サウジアラビア: "KSA",
+  パラグアイ: "PAR",
+  スコットランド: "SCO",
+  アルジェリア: "ALG",
+  カーボベルデ: "CPV",
+  イングランド: "ENG",
+  ポルトガル: "POR",
+  イラン: "IRN",
+  モロッコ: "MAR",
+  オーストラリア: "AUS",
+  エジプト: "EGY",
+  ウズベキスタン: "UZB",
+  チュニジア: "TUN",
+  コンゴ民主共和国: "COD",
+  トルコ: "TUR",
+  アルゼンチン: "ARG",
+  オランダ: "NED",
+  クロアチア: "CRO",
+  韓国: "KOR",
+  カタール: "QAT",
+  コートジボワール: "CIV",
+  パナマ: "PAN",
+  ヨルダン: "JOR",
+  キュラソー: "CUW",
+  ブラジル: "BRA",
+  ドイツ: "GER",
+  ウルグアイ: "URU",
+  コロンビア: "COL",
+  オーストリア: "AUT",
+  スイス: "SUI",
+  スウェーデン: "SWE",
+  チェコ: "CZE",
+  ガーナ: "GHA",
+  ニュージーランド: "NZL",
+};
+
+const STAGE_POINTS = {
+  none: 0,
+  groupBreakthrough: 1,
+  best16: 3,
+  best8: 5,
+  best4: 10,
+  runnerUp: 20,
+  champion: 30,
+} as const;
 
 type Team = {
   Score: number | null;
   ShortClubName?: string;
   Abbreviation?: string;
   IdTeam?: string;
+  IdCountry?: string;
 };
 
 type Match = {
@@ -13,6 +77,7 @@ type Match = {
   Date: string;
   MatchStatus: number;
   StageName?: Array<{ Description: string }>;
+  GroupName?: Array<{ Description: string }>;
   Stadium?: { Name?: Array<{ Description: string }> };
   Home?: Team;
   Away?: Team;
@@ -32,6 +97,37 @@ type StandingRow = {
   gf: number;
   ga: number;
   gd: number;
+};
+
+type ParticipantPick = {
+  country: string;
+  countryCode: string | null;
+  progressLabel: string;
+  points: number;
+};
+
+type ParticipantScore = {
+  name: string;
+  totalPoints: number;
+  picks: ParticipantPick[];
+};
+
+type ProgressKey =
+  | "none"
+  | "groupBreakthrough"
+  | "best16"
+  | "best8"
+  | "best4"
+  | "runnerUp"
+  | "champion";
+
+type TournamentProgress = {
+  groupBreakthrough: Set<string>;
+  best16: Set<string>;
+  best8: Set<string>;
+  best4: Set<string>;
+  champion: string | null;
+  runnerUp: string | null;
 };
 
 function teamName(team?: Team) {
@@ -57,6 +153,147 @@ function statusLabel(match: Match) {
   }
 
   return "Update pending";
+}
+
+function stageName(match: Match) {
+  return match.StageName?.[0]?.Description ?? "Match";
+}
+
+function isFinished(match: Match) {
+  return match.Home?.Score != null && match.Away?.Score != null;
+}
+
+function addTeam(target: Set<string>, team?: Team) {
+  if (team?.IdCountry) {
+    target.add(team.IdCountry);
+  }
+}
+
+function getTournamentProgress(matches: Match[]): TournamentProgress {
+  const progress: TournamentProgress = {
+    groupBreakthrough: new Set<string>(),
+    best16: new Set<string>(),
+    best8: new Set<string>(),
+    best4: new Set<string>(),
+    champion: null,
+    runnerUp: null,
+  };
+
+  for (const match of matches) {
+    const stage = stageName(match);
+
+    if (stage === "Round of 32") {
+      addTeam(progress.groupBreakthrough, match.Home);
+      addTeam(progress.groupBreakthrough, match.Away);
+    }
+
+    if (stage === "Round of 16") {
+      addTeam(progress.best16, match.Home);
+      addTeam(progress.best16, match.Away);
+    }
+
+    if (stage === "Quarter-final") {
+      addTeam(progress.best8, match.Home);
+      addTeam(progress.best8, match.Away);
+    }
+
+    if (stage === "Semi-final") {
+      addTeam(progress.best4, match.Home);
+      addTeam(progress.best4, match.Away);
+    }
+
+    if (
+      stage === "Final" &&
+      isFinished(match) &&
+      match.Home?.IdCountry &&
+      match.Away?.IdCountry
+    ) {
+      const homeCode = match.Home.IdCountry;
+      const awayCode = match.Away.IdCountry;
+
+      if (match.Winner && match.Winner === match.Home?.IdTeam) {
+        progress.champion = homeCode;
+        progress.runnerUp = awayCode;
+      } else if (match.Winner && match.Winner === match.Away?.IdTeam) {
+        progress.champion = awayCode;
+        progress.runnerUp = homeCode;
+      } else if ((match.Home.Score ?? 0) > (match.Away.Score ?? 0)) {
+        progress.champion = homeCode;
+        progress.runnerUp = awayCode;
+      } else if ((match.Away.Score ?? 0) > (match.Home.Score ?? 0)) {
+        progress.champion = awayCode;
+        progress.runnerUp = homeCode;
+      }
+    }
+  }
+
+  return progress;
+}
+
+function getProgressKey(
+  countryCode: string | null,
+  tournamentProgress: TournamentProgress,
+): ProgressKey {
+  if (!countryCode) return "none";
+  if (tournamentProgress.champion === countryCode) return "champion";
+  if (tournamentProgress.runnerUp === countryCode) return "runnerUp";
+  if (tournamentProgress.best4.has(countryCode)) return "best4";
+  if (tournamentProgress.best8.has(countryCode)) return "best8";
+  if (tournamentProgress.best16.has(countryCode)) return "best16";
+  if (tournamentProgress.groupBreakthrough.has(countryCode)) {
+    return "groupBreakthrough";
+  }
+  return "none";
+}
+
+function progressLabel(progressKey: ProgressKey) {
+  switch (progressKey) {
+    case "champion":
+      return "優勝";
+    case "runnerUp":
+      return "準優勝";
+    case "best4":
+      return "ベスト4";
+    case "best8":
+      return "ベスト8";
+    case "best16":
+      return "ベスト16";
+    case "groupBreakthrough":
+      return "グループ突破";
+    default:
+      return "未獲得";
+  }
+}
+
+function getParticipantScores(matches: Match[]): ParticipantScore[] {
+  const tournamentProgress = getTournamentProgress(matches);
+
+  return picks
+    .map((entry) => {
+      const participantPicks = entry.countries.map((country) => {
+        const countryCode = PICK_NAME_TO_COUNTRY_CODE[country] ?? null;
+        const progressKey = getProgressKey(countryCode, tournamentProgress);
+
+        return {
+          country,
+          countryCode,
+          progressLabel: progressLabel(progressKey),
+          points: STAGE_POINTS[progressKey],
+        };
+      });
+
+      const totalPoints = participantPicks.reduce(
+        (sum, pick) => sum + pick.points,
+        0,
+      );
+
+      return {
+        name: entry.name,
+        totalPoints,
+        picks: participantPicks,
+      };
+    })
+    .sort((a, b) => b.totalPoints - a.totalPoints || a.name.localeCompare(b.name));
 }
 
 export async function getWorldCupDashboard() {
@@ -161,11 +398,21 @@ export async function getWorldCupDashboard() {
     seasonId: WORLD_CUP_2026_SEASON_ID,
     seasonName: "FIFA World Cup 2026™",
     generatedAt: new Date().toISOString(),
+    scoringRules: [
+      { label: "優勝", points: 30 },
+      { label: "準優勝", points: 20 },
+      { label: "ベスト4", points: 10 },
+      { label: "ベスト8", points: 5 },
+      { label: "ベスト16", points: 3 },
+      { label: "グループ突破", points: 1 },
+    ],
+    participantScores: getParticipantScores(matches),
     standings,
     matches: matches.map((match) => ({
       id: match.IdMatch,
       date: match.Date,
-      stage: match.StageName?.[0]?.Description ?? "Match",
+      stage: stageName(match),
+      group: match.GroupName?.[0]?.Description ?? null,
       stadium: match.Stadium?.Name?.[0]?.Description ?? "TBD",
       homeTeam: displayTeamName(match.Home),
       awayTeam: displayTeamName(match.Away),

@@ -3,6 +3,7 @@ fifa_results.py
 node_modules
 .next
 .vercel
+tsconfig.tsbuildinfo
 dist
 out
 npm-debug.log*
