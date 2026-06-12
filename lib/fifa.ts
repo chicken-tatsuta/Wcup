@@ -84,6 +84,20 @@ type TournamentProgress = {
   runnerUp: string | null;
 };
 
+function getCountryOwners() {
+  const owners = new Map<string, string[]>();
+
+  for (const entry of picks) {
+    for (const countryCode of entry.countries) {
+      const currentOwners = owners.get(countryCode) ?? [];
+      currentOwners.push(entry.name);
+      owners.set(countryCode, currentOwners);
+    }
+  }
+
+  return owners;
+}
+
 function teamName(team?: Team) {
   return team?.ShortClubName ?? team?.Abbreviation ?? "Unknown";
 }
@@ -247,6 +261,21 @@ function getWinCounts(matches: Match[]) {
   return winCounts;
 }
 
+function formatPickedTeam(team: Team | undefined, owners: Map<string, string[]>) {
+  if (!team?.IdCountry) {
+    return displayTeamName(team);
+  }
+
+  const baseLabel = getCountryLabel(team.IdCountry, "ja");
+  const pickedBy = owners.get(team.IdCountry);
+
+  if (!pickedBy || pickedBy.length === 0) {
+    return baseLabel;
+  }
+
+  return `${baseLabel}(${pickedBy.join("・")})`;
+}
+
 function getParticipantScores(matches: Match[]): ParticipantScore[] {
   const tournamentProgress = getTournamentProgress(matches);
   const winCounts = getWinCounts(matches);
@@ -304,6 +333,7 @@ export async function getWorldCupDashboard() {
 
   const payload = (await response.json()) as MatchResponse;
   const matches = payload.Results ?? [];
+  const countryOwners = getCountryOwners();
 
   const stats = new Map<string, Omit<StandingRow, "gd">>();
 
@@ -403,8 +433,8 @@ export async function getWorldCupDashboard() {
       stage: stageName(match),
       group: match.GroupName?.[0]?.Description ?? null,
       stadium: match.Stadium?.Name?.[0]?.Description ?? "TBD",
-      homeTeam: displayTeamName(match.Home),
-      awayTeam: displayTeamName(match.Away),
+      homeTeam: formatPickedTeam(match.Home, countryOwners),
+      awayTeam: formatPickedTeam(match.Away, countryOwners),
       homeScore: match.Home?.Score ?? "-",
       awayScore: match.Away?.Score ?? "-",
       statusLabel: statusLabel(match),
