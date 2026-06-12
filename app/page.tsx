@@ -1,6 +1,8 @@
 import { getWorldCupDashboard } from "@/lib/fifa";
 import { UpdateButton } from "@/app/update-button";
 
+export const dynamic = "force-dynamic";
+
 function formatDate(date: string) {
   return new Intl.DateTimeFormat("ja-JP", {
     dateStyle: "medium",
