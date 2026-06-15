@@ -4,6 +4,14 @@ import { UpdateButton } from "@/app/update-button";
 
 export const dynamic = "force-dynamic";
 
+function formatDate(date: string) {
+  return new Intl.DateTimeFormat("ja-JP", {
+    dateStyle: "medium",
+    timeStyle: "short",
+    timeZone: "Asia/Tokyo",
+  }).format(new Date(date));
+}
+
 export default async function HomePage() {
   const dashboard = await getWorldCupDashboard();
 
