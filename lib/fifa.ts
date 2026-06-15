@@ -39,6 +39,19 @@ type MatchResponse = {
   Results?: Match[];
 };
 
+type DashboardMatch = {
+  id: string;
+  date: string;
+  stage: string;
+  group: string | null;
+  stadium: string;
+  homeTeam: string;
+  awayTeam: string;
+  homeScore: number | string;
+  awayScore: number | string;
+  statusLabel: string;
+};
+
 type StandingRow = {
   key: string;
   team: string;
@@ -293,6 +306,34 @@ function formatPickedTeam(team: Team | undefined, owners: Map<string, string[]>)
   return `${baseLabel}(${pickedBy.join("・")})`;
 }
 
+function toDashboardMatch(match: Match, owners: Map<string, string[]>): DashboardMatch {
+  return {
+    id: match.IdMatch,
+    date: match.Date,
+    stage: stageName(match),
+    group: match.GroupName?.[0]?.Description ?? null,
+    stadium: match.Stadium?.Name?.[0]?.Description ?? "TBD",
+    homeTeam: formatPickedTeam(match.Home, owners),
+    awayTeam: formatPickedTeam(match.Away, owners),
+    homeScore: match.Home?.Score ?? "-",
+    awayScore: match.Away?.Score ?? "-",
+    statusLabel: statusLabel(match),
+  };
+}
+
+function getFeaturedMatches(matches: DashboardMatch[]) {
+  const now = Date.now();
+  const sortedMatches = [...matches].sort(
+    (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime(),
+  );
+  const previous = sortedMatches.filter((match) => new Date(match.date).getTime() < now);
+  const upcoming = sortedMatches.filter((match) => new Date(match.date).getTime() >= now);
+
+  return [...previous.slice(-2), ...upcoming.slice(0, 2)].sort(
+    (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime(),
+  );
+}
+
 function getParticipantScores(matches: Match[]): ParticipantScore[] {
   const tournamentProgress = getTournamentProgress(matches);
   const winCounts = getWinCounts(matches);
@@ -434,6 +475,8 @@ export async function getWorldCupDashboard() {
       );
     });
 
+  const dashboardMatches = matches.map((match) => toDashboardMatch(match, countryOwners));
+
   return {
     seasonId: WORLD_CUP_2026_SEASON_ID,
     seasonName: "FIFA World Cup 2026™",
@@ -449,17 +492,7 @@ export async function getWorldCupDashboard() {
     ],
     participantScores: getParticipantScores(matches),
     standings,
-    matches: matches.map((match) => ({
-      id: match.IdMatch,
-      date: match.Date,
-      stage: stageName(match),
-      group: match.GroupName?.[0]?.Description ?? null,
-      stadium: match.Stadium?.Name?.[0]?.Description ?? "TBD",
-      homeTeam: formatPickedTeam(match.Home, countryOwners),
-      awayTeam: formatPickedTeam(match.Away, countryOwners),
-      homeScore: match.Home?.Score ?? "-",
-      awayScore: match.Away?.Score ?? "-",
-      statusLabel: statusLabel(match),
-    })),
+    featuredMatches: getFeaturedMatches(dashboardMatches),
+    matches: dashboardMatches,
   };
 }

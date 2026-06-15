@@ -209,9 +209,19 @@ a {
   letter-spacing: -0.03em;
 }
 
+.panel-link {
+  color: var(--muted);
+  font-size: 0.9rem;
+  text-decoration: none;
+}
+
 .matches {
   display: grid;
   gap: 10px;
+}
+
+.schedule-layout {
+  grid-template-columns: 1fr;
 }
 
 .match-card {

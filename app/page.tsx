@@ -1,15 +1,8 @@
 import { getWorldCupDashboard } from "@/lib/fifa";
+import { MatchList } from "@/app/match-list";
 import { UpdateButton } from "@/app/update-button";
 
 export const dynamic = "force-dynamic";
-
-function formatDate(date: string) {
-  return new Intl.DateTimeFormat("ja-JP", {
-    dateStyle: "medium",
-    timeStyle: "short",
-    timeZone: "Asia/Tokyo",
-  }).format(new Date(date));
-}
 
 export default async function HomePage() {
   const dashboard = await getWorldCupDashboard();
@@ -91,41 +84,12 @@ export default async function HomePage() {
       </section>
 
       <section className="content-grid">
-        <div className="panel">
-          <div className="panel-header">
-            <div>
-              <p className="panel-kicker">Schedule</p>
-              <h2>スケジュールマッチ</h2>
-            </div>
-          </div>
-
-          <div className="matches">
-            {dashboard.matches.map((match) => (
-              <article className="match-card" key={match.id}>
-                <div className="match-meta">
-                  <span>{match.group ?? match.stage}</span>
-                  <span>{formatDate(match.date)}</span>
-                </div>
-                <div className="match-scoreline">
-                  <div className="team-line">
-                    <span>{match.homeTeam}</span>
-                    <strong>{match.homeScore}</strong>
-                  </div>
-                  <div className="team-line">
-                    <span>{match.awayTeam}</span>
-                    <strong>{match.awayScore}</strong>
-                  </div>
-                </div>
-                <div className="match-footer">
-                  <span>{match.stadium}</span>
-                  <span>
-                    {match.stage} / {match.statusLabel}
-                  </span>
-                </div>
-              </article>
-            ))}
-          </div>
-        </div>
+        <MatchList
+          kicker="Schedule"
+          matches={dashboard.featuredMatches}
+          showViewAll
+          title="直近4試合"
+        />
 
         <div className="panel">
           <div className="panel-header">
