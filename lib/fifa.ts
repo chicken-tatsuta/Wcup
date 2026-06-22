@@ -636,7 +636,7 @@ function applyHistoricalFormAdjustments(
 
     recentMatches.forEach((match, index) => {
       const recencyWeight =
-        0.65 + (0.35 * index) / Math.max(recentMatches.length - 1, 1);
+        0.25 + (0.75 * index) / Math.max(recentMatches.length - 1, 1);
       const combinedWeight = match.weight * recencyWeight;
 
       totalWeight += combinedWeight;
