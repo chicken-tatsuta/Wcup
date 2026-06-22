@@ -52,3 +52,52 @@ export const COUNTRY_LABELS: Record<string, { ja: string; en: string }> = {
 export function getCountryLabel(code: string, locale: "ja" | "en" = "ja") {
   return COUNTRY_LABELS[code]?.[locale] ?? code;
 }
+
+function normalizeCountryName(name: string) {
+  return name
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/&/g, "and")
+    .replace(/['’.]/g, "")
+    .replace(/\(.*?\)/g, "")
+    .replace(/[^a-zA-Z0-9]+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+const ENGLISH_NAME_ALIASES: Record<string, string> = {
+  usa: "USA",
+  united states: "USA",
+  united states of america: "USA",
+  bosnia and herzegovina: "BIH",
+  dr congo: "COD",
+  democratic republic of congo: "COD",
+  democratic republic of the congo: "COD",
+  congo kinshasa: "COD",
+  cote divoire: "CIV",
+  ivory coast: "CIV",
+  turkey: "TUR",
+  turkiye: "TUR",
+  korea republic: "KOR",
+  south korea: "KOR",
+  curaçao: "CUW",
+  curacao: "CUW",
+  cape verde: "CPV",
+  cabo verde: "CPV",
+  czech republic: "CZE",
+  czechia: "CZE",
+};
+
+const ENGLISH_NAME_TO_COUNTRY_CODE = new Map<string, string>(
+  Object.entries(COUNTRY_LABELS).flatMap(([code, labels]) => [
+    [normalizeCountryName(labels.en), code] as const,
+  ]),
+);
+
+for (const [alias, code] of Object.entries(ENGLISH_NAME_ALIASES)) {
+  ENGLISH_NAME_TO_COUNTRY_CODE.set(normalizeCountryName(alias), code);
+}
+
+export function findCountryCodeByEnglishName(name: string) {
+  return ENGLISH_NAME_TO_COUNTRY_CODE.get(normalizeCountryName(name)) ?? null;
+}

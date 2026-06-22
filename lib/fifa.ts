@@ -1,11 +1,19 @@
 import picks from "@/data/picks.json";
-import { getCountryLabel } from "@/lib/countries";
+import { findCountryCodeByEnglishName, getCountryLabel } from "@/lib/countries";
 
 const API_URL = "https://api.fifa.com/api/v3/calendar/matches";
+const WORLD_ELO_RATINGS_URL = "https://eloratings.net/World.tsv";
+const WORLD_ELO_TEAMS_URL = "https://eloratings.net/en.teams.tsv";
+const HISTORICAL_RESULTS_URL =
+  "https://raw.githubusercontent.com/martj42/international_results/master/results.csv";
 const WORLD_CUP_2026_SEASON_ID = "285023";
 export const FIFA_MATCHES_TAG = "fifa-matches";
+export const WORLD_ELO_TAG = "world-elo-ratings";
+export const HISTORICAL_RESULTS_TAG = "historical-results";
 const SIMULATION_ITERATIONS = 1500;
 const GROUP_DRAW_PROBABILITY = 0.25;
+const HISTORY_LOOKBACK_YEARS = 8;
+const HISTORY_MATCH_LIMIT = 24;
 
 const STAGE_POINTS = {
   none: 0,
@@ -66,6 +74,8 @@ const COUNTRY_RATINGS: Record<string, number> = {
   USA: 1820,
   UZB: 1690,
 };
+
+type SiteTeamDictionary = Map<string, string>;
 
 type Team = {
   Score: number | null;
@@ -158,6 +168,18 @@ type SimKnockoutResult = {
 type SimulationAggregate = {
   averagePoints: Record<string, number>;
   winShares: Record<string, number>;
+};
+
+type StrengthProfile = {
+  ratings: Record<string, number>;
+  source: string;
+};
+
+type HistoricalMatchSample = {
+  date: number;
+  points: number;
+  goalDiff: number;
+  weight: number;
 };
 
 type ProgressKey =
@@ -414,8 +436,261 @@ function getFeaturedMatches(matches: DashboardMatch[]) {
   );
 }
 
-function getRating(countryCode: string) {
-  return COUNTRY_RATINGS[countryCode] ?? 1700;
+function getRating(countryCode: string, ratings: Record<string, number>) {
+  return ratings[countryCode] ?? COUNTRY_RATINGS[countryCode] ?? 1700;
+}
+
+function parseEloTeamsTable(payload: string) {
+  const siteTeams: SiteTeamDictionary = new Map();
+
+  for (const line of payload.split("\n")) {
+    const [siteCode, englishName] = line.trim().split("\t");
+
+    if (!siteCode || !englishName) continue;
+    siteTeams.set(siteCode, englishName);
+  }
+
+  return siteTeams;
+}
+
+function parseWorldEloRatings(payload: string, siteTeams: SiteTeamDictionary) {
+  const ratings: Record<string, number> = { ...COUNTRY_RATINGS };
+
+  for (const line of payload.split("\n")) {
+    const fields = line.trim().split("\t");
+    const siteCode = fields[2];
+    const ratingValue = Number(fields[3]);
+
+    if (!siteCode || Number.isNaN(ratingValue)) continue;
+
+    const englishName = siteTeams.get(siteCode);
+    if (!englishName) continue;
+
+    const countryCode = findCountryCodeByEnglishName(englishName);
+    if (!countryCode) continue;
+
+    ratings[countryCode] = ratingValue;
+  }
+
+  return ratings;
+}
+
+async function getCountryRatings() {
+  try {
+    const [ratingsResponse, teamsResponse] = await Promise.all([
+      fetch(WORLD_ELO_RATINGS_URL, {
+        headers: {
+          Accept: "text/tab-separated-values,text/plain;q=0.9,*/*;q=0.8",
+          "User-Agent": "Mozilla/5.0",
+        },
+        next: { revalidate: 21600, tags: [WORLD_ELO_TAG] },
+      }),
+      fetch(WORLD_ELO_TEAMS_URL, {
+        headers: {
+          Accept: "text/tab-separated-values,text/plain;q=0.9,*/*;q=0.8",
+          "User-Agent": "Mozilla/5.0",
+        },
+        next: { revalidate: 21600, tags: [WORLD_ELO_TAG] },
+      }),
+    ]);
+
+    if (!ratingsResponse.ok || !teamsResponse.ok) {
+      throw new Error(
+        `Failed to fetch World Elo ratings: ${ratingsResponse.status}/${teamsResponse.status}`,
+      );
+    }
+
+    const [ratingsPayload, teamsPayload] = await Promise.all([
+      ratingsResponse.text(),
+      teamsResponse.text(),
+    ]);
+
+    return parseWorldEloRatings(
+      ratingsPayload,
+      parseEloTeamsTable(teamsPayload),
+    );
+  } catch (error) {
+    console.error("Falling back to local ratings after Elo fetch failure.", error);
+    return { ...COUNTRY_RATINGS };
+  }
+}
+
+function parseCsvLine(line: string) {
+  const values: string[] = [];
+  let current = "";
+  let inQuotes = false;
+
+  for (let index = 0; index < line.length; index += 1) {
+    const character = line[index];
+
+    if (character === '"') {
+      if (inQuotes && line[index + 1] === '"') {
+        current += '"';
+        index += 1;
+      } else {
+        inQuotes = !inQuotes;
+      }
+      continue;
+    }
+
+    if (character === "," && !inQuotes) {
+      values.push(current);
+      current = "";
+      continue;
+    }
+
+    current += character;
+  }
+
+  values.push(current);
+  return values;
+}
+
+function getTournamentWeight(tournament: string) {
+  if (tournament === "FIFA World Cup") return 1.4;
+  if (tournament.includes("Confederations Cup")) return 1.25;
+  if (tournament.includes("Nations League")) return 1.15;
+  if (tournament.includes("Qualifier")) return 1.15;
+  if (tournament.includes("Cup")) return 1.1;
+  if (tournament.includes("Championship")) return 1.1;
+  if (tournament === "Friendly") return 0.85;
+  return 1;
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function applyHistoricalFormAdjustments(
+  baseRatings: Record<string, number>,
+  historicalResults: string,
+) {
+  const ratings = { ...baseRatings };
+  const trackedCodes = new Set(Object.keys(baseRatings));
+  const samples = new Map<string, HistoricalMatchSample[]>();
+  const cutoff = new Date().getFullYear() - HISTORY_LOOKBACK_YEARS;
+
+  for (const line of historicalResults.split("\n").slice(1)) {
+    if (!line.trim()) continue;
+
+    const [
+      dateText,
+      homeTeam,
+      awayTeam,
+      homeScoreText,
+      awayScoreText,
+      tournament,
+    ] = parseCsvLine(line);
+
+    if (!dateText || !homeTeam || !awayTeam) continue;
+
+    const matchYear = Number(dateText.slice(0, 4));
+    if (Number.isNaN(matchYear) || matchYear < cutoff) continue;
+
+    const homeCode = findCountryCodeByEnglishName(homeTeam);
+    const awayCode = findCountryCodeByEnglishName(awayTeam);
+
+    if (!homeCode || !awayCode) continue;
+    if (!trackedCodes.has(homeCode) && !trackedCodes.has(awayCode)) continue;
+
+    const homeScore = Number(homeScoreText);
+    const awayScore = Number(awayScoreText);
+
+    if (Number.isNaN(homeScore) || Number.isNaN(awayScore)) continue;
+
+    const date = new Date(dateText).getTime();
+    const weight = getTournamentWeight(tournament);
+
+    const pushSample = (
+      code: string,
+      points: number,
+      goalDiff: number,
+    ) => {
+      const current = samples.get(code) ?? [];
+      current.push({ date, points, goalDiff, weight });
+      samples.set(code, current);
+    };
+
+    if (homeScore > awayScore) {
+      pushSample(homeCode, 3, homeScore - awayScore);
+      pushSample(awayCode, 0, awayScore - homeScore);
+    } else if (awayScore > homeScore) {
+      pushSample(homeCode, 0, homeScore - awayScore);
+      pushSample(awayCode, 3, awayScore - homeScore);
+    } else {
+      pushSample(homeCode, 1, 0);
+      pushSample(awayCode, 1, 0);
+    }
+  }
+
+  for (const code of trackedCodes) {
+    const recentMatches = (samples.get(code) ?? [])
+      .sort((a, b) => a.date - b.date)
+      .slice(-HISTORY_MATCH_LIMIT);
+
+    if (recentMatches.length === 0) continue;
+
+    let totalWeight = 0;
+    let weightedPoints = 0;
+    let weightedGoalDiff = 0;
+
+    recentMatches.forEach((match, index) => {
+      const recencyWeight =
+        0.65 + (0.35 * index) / Math.max(recentMatches.length - 1, 1);
+      const combinedWeight = match.weight * recencyWeight;
+
+      totalWeight += combinedWeight;
+      weightedPoints += match.points * combinedWeight;
+      weightedGoalDiff += match.goalDiff * combinedWeight;
+    });
+
+    if (totalWeight === 0) continue;
+
+    const weightedPpg = weightedPoints / totalWeight;
+    const weightedGd = weightedGoalDiff / totalWeight;
+    const ppgBonus = ((weightedPpg - 1.35) / 1.65) * 90;
+    const gdBonus = clamp(weightedGd, -2.5, 2.5) * 18;
+    const formBonus = clamp(ppgBonus + gdBonus, -120, 120);
+
+    ratings[code] = Math.round((ratings[code] ?? COUNTRY_RATINGS[code] ?? 1700) + formBonus);
+  }
+
+  return ratings;
+}
+
+async function getStrengthProfile(): Promise<StrengthProfile> {
+  const baseRatings = await getCountryRatings();
+
+  try {
+    const response = await fetch(HISTORICAL_RESULTS_URL, {
+      headers: {
+        Accept: "text/csv,text/plain;q=0.9,*/*;q=0.8",
+        "User-Agent": "Mozilla/5.0",
+      },
+      next: { revalidate: 86400, tags: [HISTORICAL_RESULTS_TAG] },
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to fetch historical results: ${response.status}`);
+    }
+
+    const historicalResults = await response.text();
+
+    return {
+      ratings: applyHistoricalFormAdjustments(baseRatings, historicalResults),
+      source: "World Football Elo Ratings + International Results (recent form)",
+    };
+  } catch (error) {
+    console.error(
+      "Falling back to Elo-only profile after historical results fetch failure.",
+      error,
+    );
+
+    return {
+      ratings: baseRatings,
+      source: "World Football Elo Ratings",
+    };
+  }
 }
 
 function getProgressRank(progressKey: ProgressKey) {
@@ -472,7 +747,10 @@ function getOutcomeWinner(match: Match) {
   return null;
 }
 
-function buildInitialGroupRows(matches: Match[]) {
+function buildInitialGroupRows(
+  matches: Match[],
+  ratings: Record<string, number>,
+) {
   const rows = new Map<string, SimGroupRow>();
 
   const ensure = (group: string, code: string) => {
@@ -488,7 +766,7 @@ function buildInitialGroupRows(matches: Match[]) {
         gf: 0,
         ga: 0,
         points: 0,
-        rating: getRating(code),
+        rating: getRating(code, ratings),
       });
     }
 
@@ -558,8 +836,11 @@ function buildInitialGroupRows(matches: Match[]) {
   return rows;
 }
 
-function createGroupState(matches: Match[]) {
-  const rows = buildInitialGroupRows(matches);
+function createGroupState(
+  matches: Match[],
+  ratings: Record<string, number>,
+) {
+  const rows = buildInitialGroupRows(matches, ratings);
   const groups = new Map<string, SimGroupRow[]>();
 
   for (const row of rows.values()) {
@@ -698,15 +979,23 @@ function resolveThirdPlaceAssignments(
   return assigned;
 }
 
-function simulateKnockoutMatch(homeCode: string, awayCode: string) {
+function simulateKnockoutMatch(
+  homeCode: string,
+  awayCode: string,
+  ratings: Record<string, number>,
+) {
   const homeWinProbability =
-    1 / (1 + 10 ** ((getRating(awayCode) - getRating(homeCode)) / 400));
+    1 /
+    (1 + 10 ** ((getRating(awayCode, ratings) - getRating(homeCode, ratings)) / 400));
   return Math.random() < homeWinProbability
     ? { winner: homeCode, loser: awayCode }
     : { winner: awayCode, loser: homeCode };
 }
 
-function buildSimulationAggregate(matches: Match[]): SimulationAggregate {
+function buildSimulationAggregate(
+  matches: Match[],
+  ratings: Record<string, number>,
+): SimulationAggregate {
   const participants = picks.map((entry) => entry.name);
   const averagePoints = Object.fromEntries(participants.map((name) => [name, 0]));
   const winShares = Object.fromEntries(participants.map((name) => [name, 0]));
@@ -719,7 +1008,7 @@ function buildSimulationAggregate(matches: Match[]): SimulationAggregate {
     .filter((token): token is string => Boolean(token?.startsWith("3")));
 
   for (let iteration = 0; iteration < SIMULATION_ITERATIONS; iteration += 1) {
-    const groups = createGroupState(matches);
+    const groups = createGroupState(matches, ratings);
     const winCounts = createBaseWinCounts(matches);
     const progress = new Map<string, ProgressKey>();
 
@@ -836,7 +1125,7 @@ function buildSimulationAggregate(matches: Match[]): SimulationAggregate {
           loser: winner === homeCode ? awayCode : homeCode,
         };
       } else {
-        result = simulateKnockoutMatch(homeCode, awayCode);
+        result = simulateKnockoutMatch(homeCode, awayCode, ratings);
         winCounts.set(result.winner, (winCounts.get(result.winner) ?? 0) + 1);
       }
 
@@ -885,10 +1174,13 @@ function buildSimulationAggregate(matches: Match[]): SimulationAggregate {
   };
 }
 
-function getParticipantScores(matches: Match[]): ParticipantScore[] {
+function getParticipantScores(
+  matches: Match[],
+  ratings: Record<string, number>,
+): ParticipantScore[] {
   const tournamentProgress = getTournamentProgress(matches);
   const winCounts = getWinCounts(matches);
-  const simulation = buildSimulationAggregate(matches);
+  const simulation = buildSimulationAggregate(matches, ratings);
 
   return picks
     .map((entry) => {
@@ -931,13 +1223,16 @@ export async function getWorldCupDashboard() {
   url.searchParams.set("count", "500");
   url.searchParams.set("idSeason", WORLD_CUP_2026_SEASON_ID);
 
-  const response = await fetch(url, {
-    headers: {
-      Accept: "application/json",
-      "User-Agent": "Mozilla/5.0",
-    },
-    next: { revalidate: 900, tags: [FIFA_MATCHES_TAG] },
-  });
+  const [response, strengthProfile] = await Promise.all([
+    fetch(url, {
+      headers: {
+        Accept: "application/json",
+        "User-Agent": "Mozilla/5.0",
+      },
+      next: { revalidate: 900, tags: [FIFA_MATCHES_TAG] },
+    }),
+    getStrengthProfile(),
+  ]);
 
   if (!response.ok) {
     throw new Error(`Failed to fetch FIFA data: ${response.status}`);
@@ -1044,7 +1339,8 @@ export async function getWorldCupDashboard() {
       { label: "グループ突破", points: 2 },
       { label: "1勝ごと", points: 1 },
     ],
-    participantScores: getParticipantScores(matches),
+    ratingSource: strengthProfile.source,
+    participantScores: getParticipantScores(matches, strengthProfile.ratings),
     standings,
     featuredMatches: getFeaturedMatches(dashboardMatches),
     matches: dashboardMatches,
