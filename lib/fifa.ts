@@ -4,6 +4,8 @@ import { getCountryLabel } from "@/lib/countries";
 const API_URL = "https://api.fifa.com/api/v3/calendar/matches";
 const WORLD_CUP_2026_SEASON_ID = "285023";
 export const FIFA_MATCHES_TAG = "fifa-matches";
+const SIMULATION_ITERATIONS = 1500;
+const GROUP_DRAW_PROBABILITY = 0.25;
 
 const STAGE_POINTS = {
   none: 0,
@@ -14,6 +16,56 @@ const STAGE_POINTS = {
   runnerUp: 7,
   champion: 10,
 } as const;
+
+const COUNTRY_RATINGS: Record<string, number> = {
+  ARG: 1940,
+  AUS: 1740,
+  AUT: 1800,
+  BEL: 1880,
+  BIH: 1640,
+  BRA: 1950,
+  CAN: 1760,
+  CIV: 1760,
+  COD: 1660,
+  COL: 1850,
+  CPV: 1670,
+  CRO: 1840,
+  CUW: 1550,
+  CZE: 1745,
+  ECU: 1780,
+  EGY: 1720,
+  ENG: 1910,
+  ESP: 1920,
+  FRA: 1930,
+  GER: 1885,
+  GHA: 1735,
+  HAI: 1500,
+  IRN: 1770,
+  IRQ: 1580,
+  JOR: 1610,
+  JPN: 1840,
+  KOR: 1790,
+  KSA: 1640,
+  MAR: 1810,
+  MEX: 1810,
+  NED: 1890,
+  NOR: 1790,
+  NZL: 1630,
+  PAN: 1620,
+  PAR: 1750,
+  POR: 1900,
+  QAT: 1600,
+  RSA: 1650,
+  SCO: 1710,
+  SEN: 1830,
+  SUI: 1795,
+  SWE: 1775,
+  TUN: 1680,
+  TUR: 1780,
+  URU: 1860,
+  USA: 1820,
+  UZB: 1690,
+};
 
 type Team = {
   Score: number | null;
@@ -27,8 +79,11 @@ type Match = {
   IdMatch: string;
   Date: string;
   MatchStatus: number;
+  MatchNumber?: number | null;
   StageName?: Array<{ Description: string }>;
   GroupName?: Array<{ Description: string }>;
+  PlaceHolderA?: string | null;
+  PlaceHolderB?: string | null;
   Stadium?: { Name?: Array<{ Description: string }> };
   Home?: Team;
   Away?: Team;
@@ -77,7 +132,32 @@ type ParticipantPick = {
 type ParticipantScore = {
   name: string;
   totalPoints: number;
+  projectedTotalPoints: number;
+  projectedWinRate: number;
   picks: ParticipantPick[];
+};
+
+type SimGroupRow = {
+  code: string;
+  group: string;
+  played: number;
+  wins: number;
+  draws: number;
+  losses: number;
+  gf: number;
+  ga: number;
+  points: number;
+  rating: number;
+};
+
+type SimKnockoutResult = {
+  winner: string;
+  loser: string;
+};
+
+type SimulationAggregate = {
+  averagePoints: Record<string, number>;
+  winShares: Record<string, number>;
 };
 
 type ProgressKey =
@@ -334,9 +414,481 @@ function getFeaturedMatches(matches: DashboardMatch[]) {
   );
 }
 
+function getRating(countryCode: string) {
+  return COUNTRY_RATINGS[countryCode] ?? 1700;
+}
+
+function getProgressRank(progressKey: ProgressKey) {
+  switch (progressKey) {
+    case "groupBreakthrough":
+      return 1;
+    case "best16":
+      return 2;
+    case "best8":
+      return 3;
+    case "best4":
+      return 4;
+    case "runnerUp":
+      return 5;
+    case "champion":
+      return 6;
+    default:
+      return 0;
+  }
+}
+
+function bumpProgress(
+  progress: Map<string, ProgressKey>,
+  countryCode: string,
+  nextProgress: ProgressKey,
+) {
+  const current = progress.get(countryCode) ?? "none";
+
+  if (getProgressRank(nextProgress) > getProgressRank(current)) {
+    progress.set(countryCode, nextProgress);
+  }
+}
+
+function getOutcomeWinner(match: Match) {
+  const homeCode = match.Home?.IdCountry;
+  const awayCode = match.Away?.IdCountry;
+  const homeScore = match.Home?.Score;
+  const awayScore = match.Away?.Score;
+
+  if (!homeCode || !awayCode || homeScore == null || awayScore == null) {
+    return null;
+  }
+
+  if (match.Winner === match.Home?.IdTeam) {
+    return homeCode;
+  }
+
+  if (match.Winner === match.Away?.IdTeam) {
+    return awayCode;
+  }
+
+  if (homeScore > awayScore) return homeCode;
+  if (awayScore > homeScore) return awayCode;
+  return null;
+}
+
+function buildInitialGroupRows(matches: Match[]) {
+  const rows = new Map<string, SimGroupRow>();
+
+  const ensure = (group: string, code: string) => {
+    const key = `${group}:${code}`;
+    if (!rows.has(key)) {
+      rows.set(key, {
+        code,
+        group,
+        played: 0,
+        wins: 0,
+        draws: 0,
+        losses: 0,
+        gf: 0,
+        ga: 0,
+        points: 0,
+        rating: getRating(code),
+      });
+    }
+
+    return rows.get(key)!;
+  };
+
+  for (const match of matches) {
+    if (stageName(match) !== "First Stage") continue;
+
+    const group = match.GroupName?.[0]?.Description?.replace("Group ", "");
+    const homeCode = match.Home?.IdCountry;
+    const awayCode = match.Away?.IdCountry;
+
+    if (!group || !homeCode || !awayCode) continue;
+
+    ensure(group, homeCode);
+    ensure(group, awayCode);
+  }
+
+  for (const match of matches) {
+    if (stageName(match) !== "First Stage" || !isFinished(match)) continue;
+
+    const group = match.GroupName?.[0]?.Description?.replace("Group ", "");
+    const homeCode = match.Home?.IdCountry;
+    const awayCode = match.Away?.IdCountry;
+    const homeScore = match.Home?.Score;
+    const awayScore = match.Away?.Score;
+
+    if (
+      !group ||
+      !homeCode ||
+      !awayCode ||
+      homeScore == null ||
+      awayScore == null
+    ) {
+      continue;
+    }
+
+    const home = ensure(group, homeCode);
+    const away = ensure(group, awayCode);
+
+    home.played += 1;
+    away.played += 1;
+    home.gf += homeScore;
+    home.ga += awayScore;
+    away.gf += awayScore;
+    away.ga += homeScore;
+
+    const winner = getOutcomeWinner(match);
+
+    if (winner === homeCode) {
+      home.wins += 1;
+      home.points += 3;
+      away.losses += 1;
+    } else if (winner === awayCode) {
+      away.wins += 1;
+      away.points += 3;
+      home.losses += 1;
+    } else {
+      home.draws += 1;
+      away.draws += 1;
+      home.points += 1;
+      away.points += 1;
+    }
+  }
+
+  return rows;
+}
+
+function createGroupState(matches: Match[]) {
+  const rows = buildInitialGroupRows(matches);
+  const groups = new Map<string, SimGroupRow[]>();
+
+  for (const row of rows.values()) {
+    const current = groups.get(row.group) ?? [];
+    current.push({ ...row });
+    groups.set(row.group, current);
+  }
+
+  return groups;
+}
+
+function createBaseWinCounts(matches: Match[]) {
+  return new Map(getWinCounts(matches));
+}
+
+function simulateGroupMatch(
+  home: SimGroupRow,
+  away: SimGroupRow,
+  winCounts: Map<string, number>,
+) {
+  const homeWinProbability =
+    1 / (1 + 10 ** ((away.rating - home.rating) / 400));
+  const roll = Math.random();
+
+  home.played += 1;
+  away.played += 1;
+
+  if (roll < GROUP_DRAW_PROBABILITY) {
+    home.draws += 1;
+    away.draws += 1;
+    home.points += 1;
+    away.points += 1;
+    home.gf += 1;
+    home.ga += 1;
+    away.gf += 1;
+    away.ga += 1;
+    return;
+  }
+
+  const decisiveRoll = (roll - GROUP_DRAW_PROBABILITY) / (1 - GROUP_DRAW_PROBABILITY);
+  const homeWins = decisiveRoll < homeWinProbability;
+
+  if (homeWins) {
+    home.wins += 1;
+    away.losses += 1;
+    home.points += 3;
+    home.gf += 2;
+    away.ga += 2;
+    winCounts.set(home.code, (winCounts.get(home.code) ?? 0) + 1);
+    return;
+  }
+
+  away.wins += 1;
+  home.losses += 1;
+  away.points += 3;
+  away.gf += 2;
+  home.ga += 2;
+  winCounts.set(away.code, (winCounts.get(away.code) ?? 0) + 1);
+}
+
+function rankGroup(rows: SimGroupRow[]) {
+  return [...rows].sort((a, b) => {
+    // TODO: Align this with FIFA's full tiebreak order, including fair play.
+    return (
+      b.points - a.points ||
+      (b.gf - b.ga) - (a.gf - a.ga) ||
+      b.gf - a.gf ||
+      b.rating - a.rating ||
+      a.code.localeCompare(b.code)
+    );
+  });
+}
+
+function resolveThirdPlaceAssignments(
+  qualifiedThirds: Array<{ group: string; code: string }>,
+  thirdPlaceTokens: string[],
+) {
+  const thirdByGroup = new Map(
+    qualifiedThirds.map((entry) => [entry.group, entry.code]),
+  );
+  const tokenCandidates = new Map(
+    thirdPlaceTokens.map((token) => [
+      token,
+      token
+        .replace(/^3/, "")
+        .split("")
+        .filter((group) => thirdByGroup.has(group)),
+    ]),
+  );
+
+  const assigned = new Map<string, string>();
+
+  const search = (
+    remainingTokens: string[],
+    usedGroups: Set<string>,
+  ): boolean => {
+    if (remainingTokens.length === 0) return true;
+
+    const [token, ...rest] = [...remainingTokens].sort((a, b) => {
+      return (tokenCandidates.get(a)?.length ?? 0) - (tokenCandidates.get(b)?.length ?? 0);
+    });
+
+    const candidates = (tokenCandidates.get(token) ?? []).filter(
+      (group) => !usedGroups.has(group),
+    );
+
+    for (const group of candidates) {
+      assigned.set(token, thirdByGroup.get(group)!);
+      usedGroups.add(group);
+
+      if (search(rest.filter((entry) => entry !== token), usedGroups)) {
+        return true;
+      }
+
+      usedGroups.delete(group);
+      assigned.delete(token);
+    }
+
+    return false;
+  };
+
+  search(thirdPlaceTokens, new Set<string>());
+
+  for (const token of thirdPlaceTokens) {
+    if (assigned.has(token)) continue;
+
+    const fallbackGroup = (tokenCandidates.get(token) ?? []).find((group) => {
+      return ![...assigned.values()].includes(thirdByGroup.get(group)!);
+    });
+
+    if (fallbackGroup) {
+      assigned.set(token, thirdByGroup.get(fallbackGroup)!);
+    }
+  }
+
+  return assigned;
+}
+
+function simulateKnockoutMatch(homeCode: string, awayCode: string) {
+  const homeWinProbability =
+    1 / (1 + 10 ** ((getRating(awayCode) - getRating(homeCode)) / 400));
+  return Math.random() < homeWinProbability
+    ? { winner: homeCode, loser: awayCode }
+    : { winner: awayCode, loser: homeCode };
+}
+
+function buildSimulationAggregate(matches: Match[]): SimulationAggregate {
+  const participants = picks.map((entry) => entry.name);
+  const averagePoints = Object.fromEntries(participants.map((name) => [name, 0]));
+  const winShares = Object.fromEntries(participants.map((name) => [name, 0]));
+  const groupMatches = matches.filter((match) => stageName(match) === "First Stage");
+  const knockoutMatches = matches
+    .filter((match) => stageName(match) !== "First Stage")
+    .sort((a, b) => (a.MatchNumber ?? 0) - (b.MatchNumber ?? 0));
+  const thirdPlaceTokens = knockoutMatches
+    .flatMap((match) => [match.PlaceHolderA, match.PlaceHolderB])
+    .filter((token): token is string => Boolean(token?.startsWith("3")));
+
+  for (let iteration = 0; iteration < SIMULATION_ITERATIONS; iteration += 1) {
+    const groups = createGroupState(matches);
+    const winCounts = createBaseWinCounts(matches);
+    const progress = new Map<string, ProgressKey>();
+
+    for (const match of groupMatches) {
+      if (isFinished(match)) continue;
+
+      const group = match.GroupName?.[0]?.Description?.replace("Group ", "");
+      const homeCode = match.Home?.IdCountry;
+      const awayCode = match.Away?.IdCountry;
+
+      if (!group || !homeCode || !awayCode) continue;
+
+      const rows = groups.get(group);
+      const home = rows?.find((entry) => entry.code === homeCode);
+      const away = rows?.find((entry) => entry.code === awayCode);
+
+      if (!home || !away) continue;
+
+      simulateGroupMatch(home, away, winCounts);
+    }
+
+    const positions = new Map<string, { first: string; second: string; third: string }>();
+    const qualifiedThirds: Array<{ group: string; code: string; row: SimGroupRow }> = [];
+
+    for (const [group, rows] of groups) {
+      const ranked = rankGroup(rows);
+      positions.set(group, {
+        first: ranked[0].code,
+        second: ranked[1].code,
+        third: ranked[2].code,
+      });
+      qualifiedThirds.push({ group, code: ranked[2].code, row: ranked[2] });
+    }
+
+    const advancingThirds = qualifiedThirds
+      .sort((a, b) => {
+        // TODO: Align this with FIFA's official best-third-placed ranking tiebreaks.
+        return (
+          b.row.points - a.row.points ||
+          (b.row.gf - b.row.ga) - (a.row.gf - a.row.ga) ||
+          b.row.gf - a.row.gf ||
+          b.row.rating - a.row.rating ||
+          a.group.localeCompare(b.group)
+        );
+      })
+      .slice(0, 8);
+
+    const thirdAssignments = resolveThirdPlaceAssignments(
+      advancingThirds.map(({ group, code }) => ({ group, code })),
+      thirdPlaceTokens,
+    );
+    const knockoutResults = new Map<number, SimKnockoutResult>();
+
+    for (const match of knockoutMatches) {
+      const matchNumber = match.MatchNumber ?? 0;
+      const stage = stageName(match);
+      const resolveToken = (token?: string | null) => {
+        if (!token) return null;
+
+        if (token.startsWith("1") || token.startsWith("2")) {
+          const place = token[0];
+          const group = token.slice(1);
+          const groupPosition = positions.get(group);
+          if (!groupPosition) return null;
+          return place === "1" ? groupPosition.first : groupPosition.second;
+        }
+
+        if (token.startsWith("3")) {
+          return thirdAssignments.get(token) ?? null;
+        }
+
+        if (token.startsWith("W")) {
+          return knockoutResults.get(Number(token.slice(1)))?.winner ?? null;
+        }
+
+        if (token.startsWith("RU")) {
+          return knockoutResults.get(Number(token.slice(2)))?.loser ?? null;
+        }
+
+        return null;
+      };
+
+      const homeCode =
+        match.Home?.IdCountry ?? resolveToken(match.PlaceHolderA);
+      const awayCode =
+        match.Away?.IdCountry ?? resolveToken(match.PlaceHolderB);
+
+      if (!homeCode || !awayCode) continue;
+
+      if (stage === "Round of 32") {
+        bumpProgress(progress, homeCode, "groupBreakthrough");
+        bumpProgress(progress, awayCode, "groupBreakthrough");
+      } else if (stage === "Round of 16") {
+        bumpProgress(progress, homeCode, "best16");
+        bumpProgress(progress, awayCode, "best16");
+      } else if (stage === "Quarter-final") {
+        bumpProgress(progress, homeCode, "best8");
+        bumpProgress(progress, awayCode, "best8");
+      } else if (stage === "Semi-final") {
+        bumpProgress(progress, homeCode, "best4");
+        bumpProgress(progress, awayCode, "best4");
+      } else if (stage === "Final") {
+        bumpProgress(progress, homeCode, "runnerUp");
+        bumpProgress(progress, awayCode, "runnerUp");
+      }
+
+      let result: SimKnockoutResult;
+
+      if (isFinished(match)) {
+        const winner = getOutcomeWinner(match);
+        if (!winner) continue;
+        result = {
+          winner,
+          loser: winner === homeCode ? awayCode : homeCode,
+        };
+      } else {
+        result = simulateKnockoutMatch(homeCode, awayCode);
+        winCounts.set(result.winner, (winCounts.get(result.winner) ?? 0) + 1);
+      }
+
+      if (stage === "Final") {
+        bumpProgress(progress, result.winner, "champion");
+        bumpProgress(progress, result.loser, "runnerUp");
+      }
+
+      knockoutResults.set(matchNumber, result);
+    }
+
+    const simulatedScores = picks
+      .map((entry) => {
+        const totalPoints = entry.countries.reduce((sum, countryCode) => {
+          const key = progress.get(countryCode) ?? "none";
+          return sum + progressPoints(key) + (winCounts.get(countryCode) ?? 0);
+        }, 0);
+
+        return {
+          name: entry.name,
+          totalPoints,
+        };
+      })
+      .sort((a, b) => b.totalPoints - a.totalPoints || a.name.localeCompare(b.name));
+
+    const topScore = simulatedScores[0]?.totalPoints ?? 0;
+    const topPlayers = simulatedScores.filter((entry) => entry.totalPoints === topScore);
+
+    for (const entry of simulatedScores) {
+      averagePoints[entry.name] += entry.totalPoints;
+    }
+
+    for (const entry of topPlayers) {
+      winShares[entry.name] += 1 / topPlayers.length;
+    }
+  }
+
+  for (const name of participants) {
+    averagePoints[name] /= SIMULATION_ITERATIONS;
+    winShares[name] /= SIMULATION_ITERATIONS;
+  }
+
+  return {
+    averagePoints,
+    winShares,
+  };
+}
+
 function getParticipantScores(matches: Match[]): ParticipantScore[] {
   const tournamentProgress = getTournamentProgress(matches);
   const winCounts = getWinCounts(matches);
+  const simulation = buildSimulationAggregate(matches);
 
   return picks
     .map((entry) => {
@@ -365,6 +917,8 @@ function getParticipantScores(matches: Match[]): ParticipantScore[] {
       return {
         name: entry.name,
         totalPoints,
+        projectedTotalPoints: simulation.averagePoints[entry.name] ?? totalPoints,
+        projectedWinRate: simulation.winShares[entry.name] ?? 0,
         picks: participantPicks,
       };
     })

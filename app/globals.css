@@ -180,6 +180,21 @@ a {
   font-size: 0.9rem;
 }
 
+.ranking-projection {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 12px 0 0;
+  color: var(--muted);
+  font-size: 0.84rem;
+}
+
+.ranking-projection strong {
+  color: var(--ink);
+  font-size: 1rem;
+}
+
 .ranking-summary {
   margin: 18px 0 0;
   color: var(--muted);

@@ -23,7 +23,7 @@ export default async function HomePage() {
             <p className="eyebrow">World Cup Picks</p>
             <h1>5人の予想順位</h1>
             <p className="hero-copy">
-              FIFAの試合データから各指名国の到達ラウンドを集計して、現在順位を表示しています。
+              FIFAの試合データから現在順位を集計しつつ、残り試合はモンテカルロで流して推定勝率も出しています。
             </p>
           </div>
           <UpdateButton />
@@ -70,6 +70,10 @@ export default async function HomePage() {
                 <strong>{participant.totalPoints}</strong>
                 <span>pt</span>
               </div>
+              <p className="ranking-projection">
+                <span>推定勝率</span>
+                <strong>{(participant.projectedWinRate * 100).toFixed(1)}%</strong>
+              </p>
               <p className="ranking-summary">
                 {participant.picks
                   .map(
