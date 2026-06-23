@@ -354,7 +354,7 @@ function getProgressKey(
 function progressLabel(progressKey: ProgressKey) {
   switch (progressKey) {
     case "champion":
-      return "優勝 + 決勝進出";
+      return "優勝";
     case "runnerUp":
       return "決勝進出";
     case "best4":
@@ -371,10 +371,6 @@ function progressLabel(progressKey: ProgressKey) {
 }
 
 function progressPoints(progressKey: ProgressKey) {
-  if (progressKey === "champion") {
-    return STAGE_POINTS.champion + STAGE_POINTS.runnerUp;
-  }
-
   return STAGE_POINTS[progressKey];
 }
 
