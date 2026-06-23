@@ -14,6 +14,10 @@ const SIMULATION_ITERATIONS = 1500;
 const GROUP_DRAW_PROBABILITY = 0.25;
 const HISTORY_LOOKBACK_YEARS = 8;
 const HISTORY_MATCH_LIMIT = 24;
+const CURRENT_TOURNAMENT_POINT_WEIGHT = 140;
+const CURRENT_TOURNAMENT_GD_WEIGHT = 32;
+const CURRENT_TOURNAMENT_WIN_WEIGHT = 10;
+const CURRENT_TOURNAMENT_BONUS_CAP = 180;
 
 const STAGE_POINTS = {
   none: 0,
@@ -180,6 +184,15 @@ type HistoricalMatchSample = {
   points: number;
   goalDiff: number;
   weight: number;
+};
+
+type CurrentTournamentSample = {
+  played: number;
+  wins: number;
+  draws: number;
+  losses: number;
+  points: number;
+  goalDiff: number;
 };
 
 type ProgressKey =
@@ -658,8 +671,124 @@ function applyHistoricalFormAdjustments(
   return ratings;
 }
 
+function getStageMomentumBonus(stage: string) {
+  switch (stage) {
+    case "Round of 16":
+      return 20;
+    case "Quarter-final":
+      return 35;
+    case "Semi-final":
+      return 55;
+    case "Final":
+      return 80;
+    default:
+      return 0;
+  }
+}
+
+function applyCurrentTournamentAdjustments(
+  baseRatings: Record<string, number>,
+  matches: Match[],
+) {
+  const ratings = { ...baseRatings };
+  const samples = new Map<string, CurrentTournamentSample>();
+
+  const ensure = (countryCode: string) => {
+    if (!samples.has(countryCode)) {
+      samples.set(countryCode, {
+        played: 0,
+        wins: 0,
+        draws: 0,
+        losses: 0,
+        points: 0,
+        goalDiff: 0,
+      });
+    }
+
+    return samples.get(countryCode)!;
+  };
+
+  for (const match of matches) {
+    const homeCode = match.Home?.IdCountry;
+    const awayCode = match.Away?.IdCountry;
+
+    if (!homeCode || !awayCode) continue;
+
+    if (!samples.has(homeCode)) ensure(homeCode);
+    if (!samples.has(awayCode)) ensure(awayCode);
+
+    const stageBonus = getStageMomentumBonus(stageName(match));
+    if (stageBonus > 0) {
+      ratings[homeCode] = (ratings[homeCode] ?? COUNTRY_RATINGS[homeCode] ?? 1700) + stageBonus;
+      ratings[awayCode] = (ratings[awayCode] ?? COUNTRY_RATINGS[awayCode] ?? 1700) + stageBonus;
+    }
+
+    if (!isFinished(match)) continue;
+
+    const home = ensure(homeCode);
+    const away = ensure(awayCode);
+    const homeScore = match.Home?.Score ?? 0;
+    const awayScore = match.Away?.Score ?? 0;
+
+    home.played += 1;
+    away.played += 1;
+    home.goalDiff += homeScore - awayScore;
+    away.goalDiff += awayScore - homeScore;
+
+    const winner = getOutcomeWinner(match);
+
+    if (winner === homeCode) {
+      home.wins += 1;
+      home.points += 3;
+      away.losses += 1;
+    } else if (winner === awayCode) {
+      away.wins += 1;
+      away.points += 3;
+      home.losses += 1;
+    } else {
+      home.draws += 1;
+      away.draws += 1;
+      home.points += 1;
+      away.points += 1;
+    }
+  }
+
+  for (const [countryCode, sample] of samples) {
+    if (sample.played === 0) continue;
+
+    const pointsPerMatch = sample.points / sample.played;
+    const goalDiffPerMatch = sample.goalDiff / sample.played;
+    const winRate = sample.wins / sample.played;
+    const pointBonus = ((pointsPerMatch - 1.15) / 1.85) * CURRENT_TOURNAMENT_POINT_WEIGHT;
+    const goalDiffBonus =
+      clamp(goalDiffPerMatch, -2.5, 2.5) * CURRENT_TOURNAMENT_GD_WEIGHT;
+    const winBonus = winRate * CURRENT_TOURNAMENT_WIN_WEIGHT;
+    const tournamentBonus = clamp(
+      pointBonus + goalDiffBonus + winBonus,
+      -CURRENT_TOURNAMENT_BONUS_CAP,
+      CURRENT_TOURNAMENT_BONUS_CAP,
+    );
+
+    ratings[countryCode] = Math.round(
+      (ratings[countryCode] ?? COUNTRY_RATINGS[countryCode] ?? 1700) + tournamentBonus,
+    );
+  }
+
+  return ratings;
+}
+
 async function getStrengthProfile(): Promise<StrengthProfile> {
   const baseRatings = await getCountryRatings();
+  return {
+    ratings: baseRatings,
+    source: "World Football Elo Ratings",
+  };
+}
+
+async function getStrengthProfileFromMatches(
+  matches: Match[],
+): Promise<StrengthProfile> {
+  const baseProfile = await getStrengthProfile();
 
   try {
     const response = await fetch(HISTORICAL_RESULTS_URL, {
@@ -675,10 +804,19 @@ async function getStrengthProfile(): Promise<StrengthProfile> {
     }
 
     const historicalResults = await response.text();
+    const historyAdjustedRatings = applyHistoricalFormAdjustments(
+      baseProfile.ratings,
+      historicalResults,
+    );
+    const tournamentAdjustedRatings = applyCurrentTournamentAdjustments(
+      historyAdjustedRatings,
+      matches,
+    );
 
     return {
-      ratings: applyHistoricalFormAdjustments(baseRatings, historicalResults),
-      source: "World Football Elo Ratings + International Results (recent form)",
+      ratings: tournamentAdjustedRatings,
+      source:
+        "Current World Cup state + World Football Elo Ratings + International Results",
     };
   } catch (error) {
     console.error(
@@ -687,8 +825,8 @@ async function getStrengthProfile(): Promise<StrengthProfile> {
     );
 
     return {
-      ratings: baseRatings,
-      source: "World Football Elo Ratings",
+      ratings: applyCurrentTournamentAdjustments(baseProfile.ratings, matches),
+      source: "Current World Cup state + World Football Elo Ratings",
     };
   }
 }
@@ -1223,16 +1361,13 @@ export async function getWorldCupDashboard() {
   url.searchParams.set("count", "500");
   url.searchParams.set("idSeason", WORLD_CUP_2026_SEASON_ID);
 
-  const [response, strengthProfile] = await Promise.all([
-    fetch(url, {
-      headers: {
-        Accept: "application/json",
-        "User-Agent": "Mozilla/5.0",
-      },
-      next: { revalidate: 900, tags: [FIFA_MATCHES_TAG] },
-    }),
-    getStrengthProfile(),
-  ]);
+  const response = await fetch(url, {
+    headers: {
+      Accept: "application/json",
+      "User-Agent": "Mozilla/5.0",
+    },
+    next: { revalidate: 900, tags: [FIFA_MATCHES_TAG] },
+  });
 
   if (!response.ok) {
     throw new Error(`Failed to fetch FIFA data: ${response.status}`);
@@ -1240,6 +1375,7 @@ export async function getWorldCupDashboard() {
 
   const payload = (await response.json()) as MatchResponse;
   const matches = payload.Results ?? [];
+  const strengthProfile = await getStrengthProfileFromMatches(matches);
   const countryOwners = getCountryOwners();
 
   const stats = new Map<string, Omit<StandingRow, "gd">>();
