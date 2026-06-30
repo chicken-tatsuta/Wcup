@@ -148,6 +148,7 @@ type ParticipantScore = {
   totalPoints: number;
   projectedTotalPoints: number;
   projectedWinRate: number;
+  projectedLastPlaceRate: number;
   picks: ParticipantPick[];
 };
 
@@ -172,6 +173,7 @@ type SimKnockoutResult = {
 type SimulationAggregate = {
   averagePoints: Record<string, number>;
   winShares: Record<string, number>;
+  lastPlaceShares: Record<string, number>;
 };
 
 type StrengthProfile = {
@@ -1133,6 +1135,9 @@ function buildSimulationAggregate(
   const participants = picks.map((entry) => entry.name);
   const averagePoints = Object.fromEntries(participants.map((name) => [name, 0]));
   const winShares = Object.fromEntries(participants.map((name) => [name, 0]));
+  const lastPlaceShares = Object.fromEntries(
+    participants.map((name) => [name, 0]),
+  );
   const groupMatches = matches.filter((match) => stageName(match) === "First Stage");
   const knockoutMatches = matches
     .filter((match) => stageName(match) !== "First Stage")
@@ -1287,6 +1292,11 @@ function buildSimulationAggregate(
 
     const topScore = simulatedScores[0]?.totalPoints ?? 0;
     const topPlayers = simulatedScores.filter((entry) => entry.totalPoints === topScore);
+    const bottomScore =
+      simulatedScores[simulatedScores.length - 1]?.totalPoints ?? 0;
+    const bottomPlayers = simulatedScores.filter(
+      (entry) => entry.totalPoints === bottomScore,
+    );
 
     for (const entry of simulatedScores) {
       averagePoints[entry.name] += entry.totalPoints;
@@ -1295,16 +1305,22 @@ function buildSimulationAggregate(
     for (const entry of topPlayers) {
       winShares[entry.name] += 1 / topPlayers.length;
     }
+
+    for (const entry of bottomPlayers) {
+      lastPlaceShares[entry.name] += 1 / bottomPlayers.length;
+    }
   }
 
   for (const name of participants) {
     averagePoints[name] /= SIMULATION_ITERATIONS;
     winShares[name] /= SIMULATION_ITERATIONS;
+    lastPlaceShares[name] /= SIMULATION_ITERATIONS;
   }
 
   return {
     averagePoints,
     winShares,
+    lastPlaceShares,
   };
 }
 
@@ -1345,6 +1361,7 @@ function getParticipantScores(
         totalPoints,
         projectedTotalPoints: simulation.averagePoints[entry.name] ?? totalPoints,
         projectedWinRate: simulation.winShares[entry.name] ?? 0,
+        projectedLastPlaceRate: simulation.lastPlaceShares[entry.name] ?? 0,
         picks: participantPicks,
       };
     })

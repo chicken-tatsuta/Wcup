@@ -74,6 +74,10 @@ export default async function HomePage() {
                 <span>推定勝率</span>
                 <strong>{(participant.projectedWinRate * 100).toFixed(1)}%</strong>
               </p>
+              <p className="ranking-projection">
+                <span>激辛グミ率</span>
+                <strong>{(participant.projectedLastPlaceRate * 100).toFixed(1)}%</strong>
+              </p>
               <p className="ranking-summary">
                 {participant.picks
                   .map(
