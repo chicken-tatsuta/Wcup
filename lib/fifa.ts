@@ -1533,19 +1533,24 @@ function buildProjectedReasons(
   );
   const lockedPicks = participant.picks.length - activePicks.length;
   const remainingAveragePoints = participant.projectedTotalPoints - participant.totalPoints;
+  const formatPickSummary = (pick: ParticipantPick) => {
+    const details = [
+      pick.progressLabel === "未獲得" ? null : pick.progressLabel,
+      pick.winPoints > 0 ? `${pick.wins}勝` : null,
+    ].filter(Boolean);
+
+    return `${pick.country} ${pick.points}pt${
+      details.length > 0 ? ` (${details.join(" + ")})` : ""
+    }`;
+  };
   const biggestContributors = [...participant.picks]
     .sort((a, b) => b.points - a.points || b.wins - a.wins)
     .slice(0, 3)
-    .map((pick) => {
-      const details = [
-        pick.progressLabel === "未獲得" ? null : pick.progressLabel,
-        pick.winPoints > 0 ? `${pick.wins}勝` : null,
-      ].filter(Boolean);
-
-      return `${pick.country} ${pick.points}pt${
-        details.length > 0 ? ` (${details.join(" + ")})` : ""
-      }`;
-    });
+    .map(formatPickSummary);
+  const futureDrivers = [...activePicks]
+    .sort((a, b) => b.points - a.points || b.wins - a.wins)
+    .slice(0, 3)
+    .map(formatPickSummary);
 
   const reasons = [
     `現在 ${participant.totalPoints}pt、平均では最終 ${participant.projectedTotalPoints.toFixed(1)}pt まで伸びる見込み。`,
@@ -1557,8 +1562,12 @@ function buildProjectedReasons(
       : `ここからは平均 ${Math.abs(remainingAveragePoints).toFixed(1)}pt ほど目減り見込み。`,
   ];
 
-  if (biggestContributors.length > 0) {
-    reasons.push(`今の主力は ${biggestContributors.join(" / ")}。`);
+  if (futureDrivers.length > 0) {
+    reasons.push(`これからの主力候補は ${futureDrivers.join(" / ")}。`);
+  }
+
+  if (lockedPicks > 0 && biggestContributors.length > 0) {
+    reasons.push(`すでに点を稼いだ柱は ${biggestContributors.join(" / ")}。`);
   }
 
   return reasons;
