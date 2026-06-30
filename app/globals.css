@@ -225,12 +225,20 @@ a {
   line-height: 1.6;
 }
 
-.ranking-summary {
-  margin: 18px 0 0;
+.ranking-pick-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.ranking-pick-chip {
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: #ffffff;
   color: var(--muted);
-  font-size: 0.85rem;
-  line-height: 1.6;
-  word-break: break-word;
+  font-size: 0.82rem;
+  line-height: 1;
 }
 
 .content-grid {
@@ -238,6 +246,11 @@ a {
   grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr);
   gap: 16px;
   margin-top: 16px;
+}
+
+.panel-stack {
+  display: grid;
+  gap: 16px;
 }
 
 .panel-header {
@@ -267,6 +280,54 @@ a {
 
 .schedule-layout {
   grid-template-columns: 1fr;
+}
+
+.bracket-grid {
+  display: grid;
+  gap: 16px;
+}
+
+.bracket-stage h3 {
+  margin: 0 0 10px;
+  font-size: 1rem;
+  letter-spacing: -0.02em;
+}
+
+.bracket-stage-list {
+  display: grid;
+  gap: 10px;
+}
+
+.bracket-match {
+  padding: 14px 16px;
+  border-radius: 18px;
+  background: var(--surface-soft);
+}
+
+.bracket-match-head,
+.bracket-team-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.bracket-match-head {
+  margin-bottom: 10px;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.bracket-team-row + .bracket-team-row {
+  margin-top: 8px;
+}
+
+.bracket-team-row span {
+  font-size: 0.92rem;
+}
+
+.bracket-team-row strong {
+  font-size: 1rem;
+  line-height: 1;
 }
 
 .match-card {

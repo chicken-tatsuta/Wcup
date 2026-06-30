@@ -14,6 +14,16 @@ function formatDate(date: string) {
 
 export default async function HomePage() {
   const dashboard = await getWorldCupDashboard();
+  const bracketStages = [
+    "Round of 32",
+    "Round of 16",
+    "Quarter-final",
+    "Semi-final",
+    "Final",
+  ].map((stage) => ({
+    stage,
+    matches: dashboard.bracketMatches.filter((match) => match.stage === stage),
+  }));
 
   return (
     <main className="page-shell">
@@ -86,34 +96,65 @@ export default async function HomePage() {
                   ))}
                 </div>
               </details>
-              <p className="ranking-summary">
-                {participant.picks
-                  .map(
-                    (pick) => {
-                      const details = [
-                        pick.progressLabel === "未獲得" ? null : pick.progressLabel,
-                        pick.winPoints > 0 ? `${pick.wins}勝` : null,
-                      ].filter(Boolean);
-
-                      return `${pick.country} ${pick.points}pt${
-                        details.length > 0 ? ` (${details.join(" + ")})` : ""
-                      }`;
-                    },
-                  )
-                  .join(" / ")}
-              </p>
+              <div className="ranking-pick-list">
+                {participant.picks.map((pick) => (
+                  <span className="ranking-pick-chip" key={pick.countryCode}>
+                    {pick.flag}:{pick.points}pt
+                  </span>
+                ))}
+              </div>
             </article>
           ))}
         </div>
       </section>
 
       <section className="content-grid">
-        <MatchList
-          kicker="Schedule"
-          matches={dashboard.featuredMatches}
-          showViewAll
-          title="直近4試合"
-        />
+        <div className="panel-stack">
+          <MatchList
+            kicker="Schedule"
+            matches={dashboard.featuredMatches}
+            showViewAll
+            title="直近4試合"
+          />
+
+          <div className="panel">
+            <div className="panel-header">
+              <div>
+                <p className="panel-kicker">Bracket</p>
+                <h2>トーナメント表</h2>
+              </div>
+            </div>
+
+            <div className="bracket-grid">
+              {bracketStages.map(
+                ({ stage, matches }) =>
+                  matches.length > 0 && (
+                    <section className="bracket-stage" key={stage}>
+                      <h3>{stage}</h3>
+                      <div className="bracket-stage-list">
+                        {matches.map((match) => (
+                          <article className="bracket-match" key={match.id}>
+                            <div className="bracket-match-head">
+                              <span>{match.number ? `M${match.number}` : stage}</span>
+                              <span>{match.statusLabel}</span>
+                            </div>
+                            <div className="bracket-team-row">
+                              <span>{match.homeTeam}</span>
+                              <strong>{match.homeScore}</strong>
+                            </div>
+                            <div className="bracket-team-row">
+                              <span>{match.awayTeam}</span>
+                              <strong>{match.awayScore}</strong>
+                            </div>
+                          </article>
+                        ))}
+                      </div>
+                    </section>
+                  ),
+              )}
+            </div>
+          </div>
+        </div>
 
         <div className="panel">
           <div className="panel-header">

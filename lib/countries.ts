@@ -49,6 +49,108 @@ export const COUNTRY_LABELS: Record<string, { ja: string; en: string }> = {
   NZL: { ja: "ニュージーランド", en: "New Zealand" },
 };
 
+const COUNTRY_FLAG_CODES: Record<string, string> = {
+  FRA: "FR",
+  BEL: "BE",
+  USA: "US",
+  NOR: "NO",
+  CAN: "CA",
+  RSA: "ZA",
+  BIH: "BA",
+  IRQ: "IQ",
+  HAI: "HT",
+  ESP: "ES",
+  MEX: "MX",
+  SEN: "SN",
+  JPN: "JP",
+  ECU: "EC",
+  KSA: "SA",
+  PAR: "PY",
+  SCO: "GB",
+  ALG: "DZ",
+  CPV: "CV",
+  ENG: "GB",
+  POR: "PT",
+  IRN: "IR",
+  MAR: "MA",
+  AUS: "AU",
+  EGY: "EG",
+  UZB: "UZ",
+  TUN: "TN",
+  COD: "CD",
+  TUR: "TR",
+  ARG: "AR",
+  NED: "NL",
+  CRO: "HR",
+  KOR: "KR",
+  QAT: "QA",
+  CIV: "CI",
+  PAN: "PA",
+  JOR: "JO",
+  CUW: "CW",
+  BRA: "BR",
+  GER: "DE",
+  URU: "UY",
+  COL: "CO",
+  AUT: "AT",
+  SUI: "CH",
+  SWE: "SE",
+  CZE: "CZ",
+  GHA: "GH",
+  NZL: "NZ",
+};
+
+const COUNTRY_FLAG_CODES: Record<string, string> = {
+  FRA: "FR",
+  BEL: "BE",
+  USA: "US",
+  NOR: "NO",
+  CAN: "CA",
+  RSA: "ZA",
+  BIH: "BA",
+  IRQ: "IQ",
+  HAI: "HT",
+  ESP: "ES",
+  MEX: "MX",
+  SEN: "SN",
+  JPN: "JP",
+  ECU: "EC",
+  KSA: "SA",
+  PAR: "PY",
+  SCO: "GB-SCT",
+  ALG: "DZ",
+  CPV: "CV",
+  ENG: "GB-ENG",
+  POR: "PT",
+  IRN: "IR",
+  MAR: "MA",
+  AUS: "AU",
+  EGY: "EG",
+  UZB: "UZ",
+  TUN: "TN",
+  COD: "CD",
+  TUR: "TR",
+  ARG: "AR",
+  NED: "NL",
+  CRO: "HR",
+  KOR: "KR",
+  QAT: "QA",
+  CIV: "CI",
+  PAN: "PA",
+  JOR: "JO",
+  CUW: "CW",
+  BRA: "BR",
+  GER: "DE",
+  URU: "UY",
+  COL: "CO",
+  AUT: "AT",
+  SUI: "CH",
+  SWE: "SE",
+  CZE: "CZ",
+  GHA: "GH",
+  NZL: "NZ",
+};
+
 export function getCountryLabel(code: string, locale: "ja" | "en" = "ja") {
   return COUNTRY_LABELS[code]?.[locale] ?? code;
 }
@@ -100,4 +202,34 @@ for (const [alias, code] of Object.entries(ENGLISH_NAME_ALIASES)) {
 
 export function findCountryCodeByEnglishName(name: string) {
   return ENGLISH_NAME_TO_COUNTRY_CODE.get(normalizeCountryName(name)) ?? null;
+}
+
+export function getCountryFlagEmoji(code: string) {
+  const alpha2 = COUNTRY_FLAG_CODES[code];
+
+  if (!alpha2) return "🏳️";
+
+  return [...alpha2]
+    .map((character) =>
+      String.fromCodePoint(127397 + character.charCodeAt(0)),
+    )
+    .join("");
+}
+
+function toRegionalIndicatorFlag(alpha2: string) {
+  return [...alpha2.toUpperCase()]
+    .map((character) =>
+      String.fromCodePoint(127397 + character.charCodeAt(0)),
+    )
+    .join("");
+}
+
+export function getCountryFlagEmoji(code: string) {
+  const flagCode = COUNTRY_FLAG_CODES[code];
+
+  if (!flagCode) return "🏳️";
+  if (flagCode === "GB-ENG") return "🏴";
+  if (flagCode === "GB-SCT") return "🏴";
+
+  return toRegionalIndicatorFlag(flagCode);
 }

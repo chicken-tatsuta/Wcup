@@ -1,5 +1,9 @@
 import picks from "@/data/picks.json";
-import { findCountryCodeByEnglishName, getCountryLabel } from "@/lib/countries";
+import {
+  findCountryCodeByEnglishName,
+  getCountryFlagEmoji,
+  getCountryLabel,
+} from "@/lib/countries";
 
 const API_URL = "https://api.fifa.com/api/v3/calendar/matches";
 const WORLD_ELO_RATINGS_URL = "https://eloratings.net/World.tsv";
@@ -147,11 +151,23 @@ type StandingRow = {
 type ParticipantPick = {
   country: string;
   countryCode: string;
+  flag: string;
   progressLabel: string;
   progressPoints: number;
   winPoints: number;
   wins: number;
   points: number;
+};
+
+type BracketMatch = {
+  id: string;
+  number: number | null;
+  stage: string;
+  homeTeam: string;
+  awayTeam: string;
+  homeScore: number | string;
+  awayScore: number | string;
+  statusLabel: string;
 };
 
 type ParticipantScore = {
@@ -433,6 +449,36 @@ function formatPickedTeam(team: Team | undefined, owners: Map<string, string[]>)
   return `${baseLabel}(${pickedBy.join("・")})`;
 }
 
+function placeholderLabel(token?: string | null) {
+  if (!token) return "TBD";
+
+  if (/^[12][A-Z]$/.test(token)) {
+    return `${token[1]}組${token[0]}位`;
+  }
+
+  if (/^3[A-Z]+$/.test(token)) {
+    return "3位通過";
+  }
+
+  if (/^W\d+$/.test(token)) {
+    return `${token.slice(1)}勝者`;
+  }
+
+  if (/^RU\d+$/.test(token)) {
+    return `${token.slice(2)}敗者`;
+  }
+
+  return token;
+}
+
+function formatBracketTeam(team: Team | undefined, placeholder?: string | null) {
+  if (team?.IdCountry) {
+    return getCountryLabel(team.IdCountry, "ja");
+  }
+
+  return placeholderLabel(placeholder);
+}
+
 function toDashboardMatch(match: Match, owners: Map<string, string[]>): DashboardMatch {
   return {
     id: match.IdMatch,
@@ -442,6 +488,19 @@ function toDashboardMatch(match: Match, owners: Map<string, string[]>): Dashboar
     stadium: match.Stadium?.Name?.[0]?.Description ?? "TBD",
     homeTeam: formatPickedTeam(match.Home, owners),
     awayTeam: formatPickedTeam(match.Away, owners),
+    homeScore: match.Home?.Score ?? "-",
+    awayScore: match.Away?.Score ?? "-",
+    statusLabel: statusLabel(match),
+  };
+}
+
+function toBracketMatch(match: Match): BracketMatch {
+  return {
+    id: match.IdMatch,
+    number: match.MatchNumber ?? null,
+    stage: stageName(match),
+    homeTeam: formatBracketTeam(match.Home, match.PlaceHolderA),
+    awayTeam: formatBracketTeam(match.Away, match.PlaceHolderB),
     homeScore: match.Home?.Score ?? "-",
     awayScore: match.Away?.Score ?? "-",
     statusLabel: statusLabel(match),
@@ -1543,10 +1602,6 @@ function buildProjectedReasons(
       details.length > 0 ? ` (${details.join(" + ")})` : ""
     }`;
   };
-  const biggestContributors = [...participant.picks]
-    .sort((a, b) => b.points - a.points || b.wins - a.wins)
-    .slice(0, 3)
-    .map(formatPickSummary);
   const futureDrivers = [...activePicks]
     .sort((a, b) => b.points - a.points || b.wins - a.wins)
     .slice(0, 3)
@@ -1564,10 +1619,6 @@ function buildProjectedReasons(
 
   if (futureDrivers.length > 0) {
     reasons.push(`これからの主力候補は ${futureDrivers.join(" / ")}。`);
-  }
-
-  if (lockedPicks > 0 && biggestContributors.length > 0) {
-    reasons.push(`すでに点を稼いだ柱は ${biggestContributors.join(" / ")}。`);
   }
 
   return reasons;
@@ -1593,6 +1644,7 @@ function getParticipantScores(
         return {
           country: getCountryLabel(countryCode, "ja"),
           countryCode,
+          flag: getCountryFlagEmoji(countryCode),
           progressLabel: progressLabel(progressKey),
           progressPoints: stagePoints,
           winPoints,
@@ -1729,6 +1781,10 @@ export async function getWorldCupDashboard() {
     });
 
   const dashboardMatches = matches.map((match) => toDashboardMatch(match, countryOwners));
+  const bracketMatches = matches
+    .filter((match) => stageName(match) !== "First Stage")
+    .sort((a, b) => (a.MatchNumber ?? 0) - (b.MatchNumber ?? 0))
+    .map((match) => toBracketMatch(match));
 
   return {
     seasonId: WORLD_CUP_2026_SEASON_ID,
@@ -1747,6 +1803,7 @@ export async function getWorldCupDashboard() {
     participantScores: getParticipantScores(matches, strengthProfile.ratings),
     standings,
     featuredMatches: getFeaturedMatches(dashboardMatches),
+    bracketMatches,
     matches: dashboardMatches,
   };
 }
