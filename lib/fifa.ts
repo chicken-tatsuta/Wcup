@@ -160,6 +160,7 @@ type ParticipantScore = {
   projectedTotalPoints: number;
   projectedWinRate: number;
   projectedLastPlaceRate: number;
+  projectedReasons: string[];
   picks: ParticipantPick[];
 };
 
@@ -225,6 +226,8 @@ type TournamentProgress = {
   champion: string | null;
   runnerUp: string | null;
 };
+
+type RankedParticipantScore = Omit<ParticipantScore, "projectedReasons">;
 
 function getCountryOwners() {
   const owners = new Map<string, string[]>();
@@ -1521,6 +1524,46 @@ function buildSimulationAggregate(
   };
 }
 
+function buildProjectedReasons(
+  participant: RankedParticipantScore,
+  activeCountries: Set<string>,
+) {
+  const activePicks = participant.picks.filter((pick) =>
+    activeCountries.has(pick.countryCode),
+  );
+  const lockedPicks = participant.picks.length - activePicks.length;
+  const remainingAveragePoints = participant.projectedTotalPoints - participant.totalPoints;
+  const biggestContributors = [...participant.picks]
+    .sort((a, b) => b.points - a.points || b.wins - a.wins)
+    .slice(0, 3)
+    .map((pick) => {
+      const details = [
+        pick.progressLabel === "未獲得" ? null : pick.progressLabel,
+        pick.winPoints > 0 ? `${pick.wins}勝` : null,
+      ].filter(Boolean);
+
+      return `${pick.country} ${pick.points}pt${
+        details.length > 0 ? ` (${details.join(" + ")})` : ""
+      }`;
+    });
+
+  const reasons = [
+    `現在 ${participant.totalPoints}pt、平均では最終 ${participant.projectedTotalPoints.toFixed(1)}pt まで伸びる見込み。`,
+    activePicks.length > 0
+      ? `まだ ${activePicks.length} か国に加点余地があり、固定済みは ${lockedPicks} か国。`
+      : "残っている加点余地がほぼなく、ここからの上積みは小さめ。",
+    remainingAveragePoints >= 0
+      ? `ここから平均で ${remainingAveragePoints.toFixed(1)}pt の上積み見込み。`
+      : `ここからは平均 ${Math.abs(remainingAveragePoints).toFixed(1)}pt ほど目減り見込み。`,
+  ];
+
+  if (biggestContributors.length > 0) {
+    reasons.push(`今の主力は ${biggestContributors.join(" / ")}。`);
+  }
+
+  return reasons;
+}
+
 function getParticipantScores(
   matches: Match[],
   ratings: Record<string, number>,
@@ -1528,8 +1571,9 @@ function getParticipantScores(
   const tournamentProgress = getTournamentProgress(matches);
   const winCounts = getWinCounts(matches);
   const simulation = buildSimulationAggregate(matches, ratings);
+  const activeCountries = getPotentialScoringCountries(matches, ratings);
 
-  return picks
+  const rankedParticipants: RankedParticipantScore[] = picks
     .map((entry) => {
       const participantPicks = entry.countries.map((countryCode) => {
         const progressKey = getProgressKey(countryCode, tournamentProgress);
@@ -1563,6 +1607,11 @@ function getParticipantScores(
       };
     })
     .sort((a, b) => b.totalPoints - a.totalPoints || a.name.localeCompare(b.name));
+
+  return rankedParticipants.map((participant) => ({
+    ...participant,
+    projectedReasons: buildProjectedReasons(participant, activeCountries),
+  }));
 }
 
 export async function getWorldCupDashboard() {

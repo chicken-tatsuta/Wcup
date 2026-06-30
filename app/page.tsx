@@ -78,6 +78,14 @@ export default async function HomePage() {
                 <span>激辛グミ率</span>
                 <strong>{(participant.projectedLastPlaceRate * 100).toFixed(1)}%</strong>
               </p>
+              <details className="ranking-explainer">
+                <summary>勝率が高い理由</summary>
+                <div className="ranking-explainer-body">
+                  {participant.projectedReasons.map((reason) => (
+                    <p key={reason}>{reason}</p>
+                  ))}
+                </div>
+              </details>
               <p className="ranking-summary">
                 {participant.picks
                   .map(
