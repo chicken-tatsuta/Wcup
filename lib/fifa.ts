@@ -13,11 +13,22 @@ export const HISTORICAL_RESULTS_TAG = "historical-results";
 const SIMULATION_ITERATIONS = 1500;
 const GROUP_DRAW_PROBABILITY = 0.25;
 const HISTORY_LOOKBACK_YEARS = 8;
-const HISTORY_MATCH_LIMIT = 24;
+const HISTORY_MATCH_LIMIT = 10;
 const CURRENT_TOURNAMENT_POINT_WEIGHT = 140;
 const CURRENT_TOURNAMENT_GD_WEIGHT = 32;
 const CURRENT_TOURNAMENT_WIN_WEIGHT = 10;
 const CURRENT_TOURNAMENT_BONUS_CAP = 180;
+const CHAMPION_PEDIGREE_DRAW_PROBABILITY = 0.22;
+const CHAMPION_PEDIGREE_BONUS_CAP = 60;
+const PAST_WORLD_CUP_CHAMPIONS = [
+  "ARG",
+  "BRA",
+  "ENG",
+  "ESP",
+  "FRA",
+  "GER",
+  "URU",
+] as const;
 
 const STAGE_POINTS = {
   none: 0,
@@ -647,7 +658,7 @@ function applyHistoricalFormAdjustments(
 
     recentMatches.forEach((match, index) => {
       const recencyWeight =
-        0.25 + (0.75 * index) / Math.max(recentMatches.length - 1, 1);
+        0.5 + (0.5 * index) / Math.max(recentMatches.length - 1, 1);
       const combinedWeight = match.weight * recencyWeight;
 
       totalWeight += combinedWeight;
@@ -664,6 +675,45 @@ function applyHistoricalFormAdjustments(
     const formBonus = clamp(ppgBonus + gdBonus, -120, 120);
 
     ratings[code] = Math.round((ratings[code] ?? COUNTRY_RATINGS[code] ?? 1700) + formBonus);
+  }
+
+  return ratings;
+}
+
+function applyChampionPedigreeAdjustments(
+  baseRatings: Record<string, number>,
+) {
+  const ratings = { ...baseRatings };
+  const championPool = PAST_WORLD_CUP_CHAMPIONS.filter((countryCode) =>
+    Boolean(baseRatings[countryCode] ?? COUNTRY_RATINGS[countryCode]),
+  );
+
+  for (const countryCode of Object.keys(baseRatings)) {
+    if (championPool.length === 0) continue;
+
+    let expectedPointsTotal = 0;
+
+    for (const championCode of championPool) {
+      const teamRating = getRating(countryCode, baseRatings);
+      const championRating = getRating(championCode, baseRatings);
+      const winProbability =
+        1 / (1 + 10 ** ((championRating - teamRating) / 400));
+      const decisiveProbability = 1 - CHAMPION_PEDIGREE_DRAW_PROBABILITY;
+      const expectedPoints =
+        CHAMPION_PEDIGREE_DRAW_PROBABILITY +
+        decisiveProbability * 3 * winProbability;
+
+      expectedPointsTotal += expectedPoints;
+    }
+
+    const averageExpectedPoints = expectedPointsTotal / championPool.length;
+    const pedigreeBonus = clamp(
+      ((averageExpectedPoints - 1.1) / 1.4) * CHAMPION_PEDIGREE_BONUS_CAP,
+      -CHAMPION_PEDIGREE_BONUS_CAP,
+      CHAMPION_PEDIGREE_BONUS_CAP,
+    );
+
+    ratings[countryCode] = Math.round(getRating(countryCode, baseRatings) + pedigreeBonus);
   }
 
   return ratings;
@@ -775,6 +825,124 @@ function applyCurrentTournamentAdjustments(
   return ratings;
 }
 
+function getPotentialScoringCountries(
+  matches: Match[],
+  ratings: Record<string, number>,
+) {
+  const activeCountries = new Set<string>();
+  const groups = createGroupState(matches, ratings);
+  const unfinishedGroupNames = new Set<string>();
+
+  for (const match of matches) {
+    if (stageName(match) !== "First Stage" || isFinished(match)) continue;
+    const group = match.GroupName?.[0]?.Description?.replace("Group ", "");
+    if (!group) continue;
+    unfinishedGroupNames.add(group);
+    if (match.Home?.IdCountry) activeCountries.add(match.Home.IdCountry);
+    if (match.Away?.IdCountry) activeCountries.add(match.Away.IdCountry);
+  }
+
+  const groupCandidates = new Map<
+    string,
+    { first: Set<string>; second: Set<string>; third: Set<string> }
+  >();
+
+  for (const [group, rows] of groups) {
+    const ranked = rankGroup(rows);
+
+    if (unfinishedGroupNames.has(group)) {
+      const allTeams = new Set(rows.map((row) => row.code));
+      allTeams.forEach((countryCode) => activeCountries.add(countryCode));
+      groupCandidates.set(group, {
+        first: new Set(allTeams),
+        second: new Set(allTeams),
+        third: new Set(allTeams),
+      });
+      continue;
+    }
+
+    groupCandidates.set(group, {
+      first: new Set([ranked[0].code]),
+      second: new Set([ranked[1].code]),
+      third: new Set([ranked[2].code]),
+    });
+  }
+
+  const knockoutMatches = matches
+    .filter((match) => stageName(match) !== "First Stage")
+    .sort((a, b) => (a.MatchNumber ?? 0) - (b.MatchNumber ?? 0));
+  const winnerCandidates = new Map<number, Set<string>>();
+  const loserCandidates = new Map<number, Set<string>>();
+
+  const resolveToken = (token?: string | null) => {
+    if (!token) return new Set<string>();
+
+    if (token.startsWith("1") || token.startsWith("2")) {
+      const place = token[0];
+      const group = token.slice(1);
+      const candidates = groupCandidates.get(group);
+      if (!candidates) return new Set<string>();
+      return place === "1" ? candidates.first : candidates.second;
+    }
+
+    if (token.startsWith("3")) {
+      const candidateSet = new Set<string>();
+      for (const group of token.replace(/^3/, "").split("")) {
+        const candidates = groupCandidates.get(group)?.third;
+        candidates?.forEach((countryCode) => candidateSet.add(countryCode));
+      }
+      return candidateSet;
+    }
+
+    if (token.startsWith("W")) {
+      return winnerCandidates.get(Number(token.slice(1))) ?? new Set<string>();
+    }
+
+    if (token.startsWith("RU")) {
+      return loserCandidates.get(Number(token.slice(2))) ?? new Set<string>();
+    }
+
+    return new Set<string>();
+  };
+
+  for (const match of knockoutMatches) {
+    const matchNumber = match.MatchNumber ?? 0;
+    const homeCandidates = match.Home?.IdCountry
+      ? new Set([match.Home.IdCountry])
+      : resolveToken(match.PlaceHolderA);
+    const awayCandidates = match.Away?.IdCountry
+      ? new Set([match.Away.IdCountry])
+      : resolveToken(match.PlaceHolderB);
+    const participants = new Set<string>([
+      ...homeCandidates,
+      ...awayCandidates,
+    ]);
+
+    if (!isFinished(match)) {
+      participants.forEach((countryCode) => activeCountries.add(countryCode));
+    }
+
+    if (isFinished(match)) {
+      const winner = getOutcomeWinner(match);
+      if (winner) {
+        const loser =
+          winner === match.Home?.IdCountry ? match.Away?.IdCountry : match.Home?.IdCountry;
+
+        winnerCandidates.set(matchNumber, new Set([winner]));
+        if (loser) {
+          loserCandidates.set(matchNumber, new Set([loser]));
+        }
+      }
+      continue;
+    }
+
+    winnerCandidates.set(matchNumber, new Set(participants));
+    loserCandidates.set(matchNumber, new Set(participants));
+  }
+
+  return activeCountries;
+}
+
 async function getStrengthProfile(): Promise<StrengthProfile> {
   const baseRatings = await getCountryRatings();
   return {
@@ -787,6 +955,7 @@ async function getStrengthProfileFromMatches(
   matches: Match[],
 ): Promise<StrengthProfile> {
   const baseProfile = await getStrengthProfile();
+  const activeCountries = getPotentialScoringCountries(matches, baseProfile.ratings);
 
   try {
     const response = await fetch(HISTORICAL_RESULTS_URL, {
@@ -802,19 +971,32 @@ async function getStrengthProfileFromMatches(
     }
 
     const historicalResults = await response.text();
-    const historyAdjustedRatings = applyHistoricalFormAdjustments(
+    const pedigreeAdjustedRatings = applyChampionPedigreeAdjustments(
       baseProfile.ratings,
+    );
+    const historyAdjustedRatings = applyHistoricalFormAdjustments(
+      pedigreeAdjustedRatings,
       historicalResults,
     );
     const tournamentAdjustedRatings = applyCurrentTournamentAdjustments(
       historyAdjustedRatings,
       matches,
     );
+    const activeAdjustedRatings = { ...tournamentAdjustedRatings };
+
+    for (const countryCode of Object.keys(activeAdjustedRatings)) {
+      if (!activeCountries.has(countryCode)) {
+        activeAdjustedRatings[countryCode] = getRating(
+          countryCode,
+          baseProfile.ratings,
+        );
+      }
+    }
 
     return {
-      ratings: tournamentAdjustedRatings,
+      ratings: activeAdjustedRatings,
       source:
-        "Current World Cup state + World Football Elo Ratings + International Results",
+        "Current World Cup state + World Football Elo Ratings + International Results + champion prior",
     };
   } catch (error) {
     console.error(
@@ -822,9 +1004,24 @@ async function getStrengthProfileFromMatches(
       error,
     );
 
+    const tournamentAdjustedRatings = applyCurrentTournamentAdjustments(
+      applyChampionPedigreeAdjustments(baseProfile.ratings),
+      matches,
+    );
+    const activeAdjustedRatings = { ...tournamentAdjustedRatings };
+
+    for (const countryCode of Object.keys(activeAdjustedRatings)) {
+      if (!activeCountries.has(countryCode)) {
+        activeAdjustedRatings[countryCode] = getRating(
+          countryCode,
+          baseProfile.ratings,
+        );
+      }
+    }
+
     return {
-      ratings: applyCurrentTournamentAdjustments(baseProfile.ratings, matches),
-      source: "Current World Cup state + World Football Elo Ratings",
+      ratings: activeAdjustedRatings,
+      source: "Current World Cup state + World Football Elo Ratings + champion prior",
     };
   }
 }
