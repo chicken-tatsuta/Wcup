@@ -41,7 +41,7 @@ const STAGE_POINTS = {
   best8: 4,
   best4: 5,
   runnerUp: 7,
-  champion: 10,
+  champion: 17,
 } as const;
 
 const COUNTRY_RATINGS: Record<string, number> = {
@@ -1791,7 +1791,7 @@ export async function getWorldCupDashboard() {
     seasonName: "FIFA World Cup 2026™",
     generatedAt: new Date().toISOString(),
     scoringRules: [
-      { label: "優勝", points: 10 },
+      { label: "優勝", points: 17 },
       { label: "決勝進出", points: 7 },
       { label: "ベスト4", points: 5 },
       { label: "ベスト8", points: 4 },
