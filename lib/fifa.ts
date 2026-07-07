@@ -15,6 +15,8 @@ export const FIFA_MATCHES_TAG = "fifa-matches";
 export const WORLD_ELO_TAG = "world-elo-ratings";
 export const HISTORICAL_RESULTS_TAG = "historical-results";
 const SIMULATION_ITERATIONS = 1500;
+const FULL_SEASON_MATCH_COUNT = 500;
+const EXACT_SEARCH_MATCH_LIMIT = 12;
 const GROUP_DRAW_PROBABILITY = 0.25;
 const HISTORY_LOOKBACK_YEARS = 8;
 const HISTORY_MATCH_LIMIT = 10;
@@ -204,6 +206,11 @@ type SimulationAggregate = {
   lastPlaceShares: Record<string, number>;
 };
 
+type GroupPositions = Map<
+  string,
+  { first: string; second: string; third: string }
+>;
+
 type StrengthProfile = {
   ratings: Record<string, number>;
   source: string;
@@ -244,6 +251,38 @@ type TournamentProgress = {
 };
 
 type RankedParticipantScore = Omit<ParticipantScore, "projectedReasons">;
+
+async function fetchWorldCupMatches() {
+  const url = new URL(API_URL);
+  url.searchParams.set("language", "en");
+  url.searchParams.set("count", String(FULL_SEASON_MATCH_COUNT));
+  url.searchParams.set("idSeason", WORLD_CUP_2026_SEASON_ID);
+
+  const response = await fetch(url, {
+    headers: {
+      Accept: "application/json",
+      "User-Agent": "Mozilla/5.0",
+    },
+    next: { revalidate: 900, tags: [FIFA_MATCHES_TAG] },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to fetch FIFA data: ${response.status}`);
+  }
+
+  const payload = (await response.json()) as MatchResponse;
+  const matches = payload.Results ?? [];
+
+  if (matches.length < 80) {
+    throw new Error(`Unexpectedly short FIFA fixture feed: ${matches.length} matches`);
+  }
+
+  return matches.sort(
+    (a, b) =>
+      (a.MatchNumber ?? Number.MAX_SAFE_INTEGER) -
+      (b.MatchNumber ?? Number.MAX_SAFE_INTEGER),
+  );
+}
 
 function getCountryOwners() {
   const owners = new Map<string, string[]>();
@@ -1387,10 +1426,331 @@ function simulateKnockoutMatch(
     : { winner: awayCode, loser: homeCode };
 }
 
+function getKnockoutWinProbability(
+  homeCode: string,
+  awayCode: string,
+  ratings: Record<string, number>,
+) {
+  return (
+    1 /
+    (1 + 10 ** ((getRating(awayCode, ratings) - getRating(homeCode, ratings)) / 400))
+  );
+}
+
+function applyStageEntryProgress(
+  progress: Map<string, ProgressKey>,
+  stage: string,
+  homeCode: string,
+  awayCode: string,
+) {
+  if (stage === "Round of 32") {
+    bumpProgress(progress, homeCode, "groupBreakthrough");
+    bumpProgress(progress, awayCode, "groupBreakthrough");
+    return;
+  }
+
+  if (stage === "Round of 16") {
+    bumpProgress(progress, homeCode, "best16");
+    bumpProgress(progress, awayCode, "best16");
+    return;
+  }
+
+  if (stage === "Quarter-final") {
+    bumpProgress(progress, homeCode, "best8");
+    bumpProgress(progress, awayCode, "best8");
+    return;
+  }
+
+  if (stage === "Semi-final") {
+    bumpProgress(progress, homeCode, "best4");
+    bumpProgress(progress, awayCode, "best4");
+    return;
+  }
+
+  if (stage === "Final") {
+    bumpProgress(progress, homeCode, "runnerUp");
+    bumpProgress(progress, awayCode, "runnerUp");
+  }
+}
+
+function buildResolvedGroupContext(
+  matches: Match[],
+  ratings: Record<string, number>,
+) {
+  const groupMatches = matches.filter((match) => stageName(match) === "First Stage");
+  const knockoutMatches = matches
+    .filter((match) => stageName(match) !== "First Stage")
+    .sort((a, b) => (a.MatchNumber ?? 0) - (b.MatchNumber ?? 0));
+  const groups = createGroupState(matches, ratings);
+  const positions: GroupPositions = new Map();
+  const qualifiedThirds: Array<{ group: string; code: string; row: SimGroupRow }> = [];
+
+  for (const match of groupMatches) {
+    if (!isFinished(match)) {
+      return null;
+    }
+  }
+
+  for (const [group, rows] of groups) {
+    const ranked = rankGroup(rows);
+    if (ranked.length < 3) {
+      return null;
+    }
+
+    positions.set(group, {
+      first: ranked[0].code,
+      second: ranked[1].code,
+      third: ranked[2].code,
+    });
+    qualifiedThirds.push({ group, code: ranked[2].code, row: ranked[2] });
+  }
+
+  const advancingThirds = qualifiedThirds
+    .sort((a, b) => {
+      return (
+        b.row.points - a.row.points ||
+        (b.row.gf - b.row.ga) - (a.row.gf - a.row.ga) ||
+        b.row.gf - a.row.gf ||
+        b.row.rating - a.row.rating ||
+        a.group.localeCompare(b.group)
+      );
+    })
+    .slice(0, 8);
+
+  const thirdPlaceTokens = knockoutMatches
+    .flatMap((match) => [match.PlaceHolderA, match.PlaceHolderB])
+    .filter((token): token is string => Boolean(token?.startsWith("3")));
+
+  return {
+    positions,
+    thirdAssignments: resolveThirdPlaceAssignments(
+      advancingThirds.map(({ group, code }) => ({ group, code })),
+      thirdPlaceTokens,
+    ),
+  };
+}
+
+function resolveKnockoutTeam(
+  token: string | null | undefined,
+  positions: GroupPositions,
+  thirdAssignments: Map<string, string>,
+  knockoutResults: Map<number, SimKnockoutResult>,
+) {
+  if (!token) return null;
+
+  if (token.startsWith("1") || token.startsWith("2")) {
+    const place = token[0];
+    const group = token.slice(1);
+    const groupPosition = positions.get(group);
+    if (!groupPosition) return null;
+    return place === "1" ? groupPosition.first : groupPosition.second;
+  }
+
+  if (token.startsWith("3")) {
+    return thirdAssignments.get(token) ?? null;
+  }
+
+  if (token.startsWith("W")) {
+    return knockoutResults.get(Number(token.slice(1)))?.winner ?? null;
+  }
+
+  if (token.startsWith("RU")) {
+    return knockoutResults.get(Number(token.slice(2)))?.loser ?? null;
+  }
+
+  return null;
+}
+
+function createParticipantTotals(
+  progress: Map<string, ProgressKey>,
+  winCounts: Map<string, number>,
+) {
+  return picks
+    .map((entry) => ({
+      name: entry.name,
+      totalPoints: entry.countries.reduce((sum, countryCode) => {
+        const key = progress.get(countryCode) ?? "none";
+        return sum + progressPoints(key) + (winCounts.get(countryCode) ?? 0);
+      }, 0),
+    }))
+    .sort((a, b) => b.totalPoints - a.totalPoints || a.name.localeCompare(b.name));
+}
+
+function accumulateSimulationLeaf(
+  aggregate: SimulationAggregate,
+  simulatedScores: Array<{ name: string; totalPoints: number }>,
+  weight: number,
+) {
+  const topScore = simulatedScores[0]?.totalPoints ?? 0;
+  const topPlayers = simulatedScores.filter((entry) => entry.totalPoints === topScore);
+  const bottomScore =
+    simulatedScores[simulatedScores.length - 1]?.totalPoints ?? 0;
+  const bottomPlayers = simulatedScores.filter(
+    (entry) => entry.totalPoints === bottomScore,
+  );
+
+  for (const entry of simulatedScores) {
+    aggregate.averagePoints[entry.name] += entry.totalPoints * weight;
+  }
+
+  for (const entry of topPlayers) {
+    aggregate.winShares[entry.name] += weight / topPlayers.length;
+  }
+
+  for (const entry of bottomPlayers) {
+    aggregate.lastPlaceShares[entry.name] += weight / bottomPlayers.length;
+  }
+}
+
+function shouldUseExactKnockoutSearch(matches: Match[]) {
+  const unfinishedGroupMatches = matches.filter(
+    (match) => stageName(match) === "First Stage" && !isFinished(match),
+  );
+  const unfinishedKnockoutMatches = matches.filter(
+    (match) => stageName(match) !== "First Stage" && !isFinished(match),
+  );
+
+  return (
+    unfinishedGroupMatches.length === 0 &&
+    unfinishedKnockoutMatches.length > 0 &&
+    unfinishedKnockoutMatches.length <= EXACT_SEARCH_MATCH_LIMIT
+  );
+}
+
+function buildExactKnockoutAggregate(
+  matches: Match[],
+  ratings: Record<string, number>,
+): SimulationAggregate | null {
+  const participants = picks.map((entry) => entry.name);
+  const aggregate: SimulationAggregate = {
+    averagePoints: Object.fromEntries(participants.map((name) => [name, 0])),
+    winShares: Object.fromEntries(participants.map((name) => [name, 0])),
+    lastPlaceShares: Object.fromEntries(participants.map((name) => [name, 0])),
+  };
+  const knockoutMatches = matches
+    .filter((match) => stageName(match) !== "First Stage")
+    .sort((a, b) => (a.MatchNumber ?? 0) - (b.MatchNumber ?? 0));
+  const resolvedGroups = buildResolvedGroupContext(matches, ratings);
+
+  if (!resolvedGroups) {
+    return null;
+  }
+
+  const { positions, thirdAssignments } = resolvedGroups;
+  const baseWinCounts = createBaseWinCounts(matches);
+  let totalWeight = 0;
+
+  const walk = (
+    index: number,
+    knockoutResults: Map<number, SimKnockoutResult>,
+    winCounts: Map<string, number>,
+    progress: Map<string, ProgressKey>,
+    weight: number,
+  ) => {
+    if (index >= knockoutMatches.length) {
+      totalWeight += weight;
+      accumulateSimulationLeaf(
+        aggregate,
+        createParticipantTotals(progress, winCounts),
+        weight,
+      );
+      return;
+    }
+
+    const match = knockoutMatches[index];
+    const matchNumber = match.MatchNumber ?? 0;
+    const stage = stageName(match);
+    const homeCode =
+      match.Home?.IdCountry ??
+      resolveKnockoutTeam(
+        match.PlaceHolderA,
+        positions,
+        thirdAssignments,
+        knockoutResults,
+      );
+    const awayCode =
+      match.Away?.IdCountry ??
+      resolveKnockoutTeam(
+        match.PlaceHolderB,
+        positions,
+        thirdAssignments,
+        knockoutResults,
+      );
+
+    if (!homeCode || !awayCode) {
+      return;
+    }
+
+    const nextProgress = new Map(progress);
+    applyStageEntryProgress(nextProgress, stage, homeCode, awayCode);
+
+    const applyOutcome = (winner: string, loser: string, branchWeight: number) => {
+      const nextResults = new Map(knockoutResults);
+      nextResults.set(matchNumber, { winner, loser });
+      const nextWinCounts = new Map(winCounts);
+      const branchProgress = new Map(nextProgress);
+
+      if (!isFinished(match)) {
+        nextWinCounts.set(winner, (nextWinCounts.get(winner) ?? 0) + 1);
+      }
+
+      if (stage === "Final") {
+        bumpProgress(branchProgress, winner, "champion");
+        bumpProgress(branchProgress, loser, "runnerUp");
+      }
+
+      walk(
+        index + 1,
+        nextResults,
+        nextWinCounts,
+        branchProgress,
+        branchWeight,
+      );
+    };
+
+    if (isFinished(match)) {
+      const winner = getOutcomeWinner(match);
+      if (!winner) return;
+      applyOutcome(winner, winner === homeCode ? awayCode : homeCode, weight);
+      return;
+    }
+
+    const homeWinProbability = getKnockoutWinProbability(
+      homeCode,
+      awayCode,
+      ratings,
+    );
+
+    applyOutcome(homeCode, awayCode, weight * homeWinProbability);
+    applyOutcome(awayCode, homeCode, weight * (1 - homeWinProbability));
+  };
+
+  walk(0, new Map(), baseWinCounts, new Map(), 1);
+
+  if (totalWeight <= 0) {
+    return null;
+  }
+
+  for (const name of participants) {
+    aggregate.averagePoints[name] /= totalWeight;
+    aggregate.winShares[name] /= totalWeight;
+    aggregate.lastPlaceShares[name] /= totalWeight;
+  }
+
+  return aggregate;
+}
+
 function buildSimulationAggregate(
   matches: Match[],
   ratings: Record<string, number>,
 ): SimulationAggregate {
+  if (shouldUseExactKnockoutSearch(matches)) {
+    const exactAggregate = buildExactKnockoutAggregate(matches, ratings);
+    if (exactAggregate) {
+      return exactAggregate;
+    }
+  }
+
   const participants = picks.map((entry) => entry.name);
   const averagePoints = Object.fromEntries(participants.map((name) => [name, 0]));
   const winShares = Object.fromEntries(participants.map((name) => [name, 0]));
@@ -1428,7 +1788,7 @@ function buildSimulationAggregate(
       simulateGroupMatch(home, away, winCounts);
     }
 
-    const positions = new Map<string, { first: string; second: string; third: string }>();
+    const positions: GroupPositions = new Map();
     const qualifiedThirds: Array<{ group: string; code: string; row: SimGroupRow }> = [];
 
     for (const [group, rows] of groups) {
@@ -1463,55 +1823,26 @@ function buildSimulationAggregate(
     for (const match of knockoutMatches) {
       const matchNumber = match.MatchNumber ?? 0;
       const stage = stageName(match);
-      const resolveToken = (token?: string | null) => {
-        if (!token) return null;
-
-        if (token.startsWith("1") || token.startsWith("2")) {
-          const place = token[0];
-          const group = token.slice(1);
-          const groupPosition = positions.get(group);
-          if (!groupPosition) return null;
-          return place === "1" ? groupPosition.first : groupPosition.second;
-        }
-
-        if (token.startsWith("3")) {
-          return thirdAssignments.get(token) ?? null;
-        }
-
-        if (token.startsWith("W")) {
-          return knockoutResults.get(Number(token.slice(1)))?.winner ?? null;
-        }
-
-        if (token.startsWith("RU")) {
-          return knockoutResults.get(Number(token.slice(2)))?.loser ?? null;
-        }
-
-        return null;
-      };
-
       const homeCode =
-        match.Home?.IdCountry ?? resolveToken(match.PlaceHolderA);
+        match.Home?.IdCountry ??
+        resolveKnockoutTeam(
+          match.PlaceHolderA,
+          positions,
+          thirdAssignments,
+          knockoutResults,
+        );
       const awayCode =
-        match.Away?.IdCountry ?? resolveToken(match.PlaceHolderB);
+        match.Away?.IdCountry ??
+        resolveKnockoutTeam(
+          match.PlaceHolderB,
+          positions,
+          thirdAssignments,
+          knockoutResults,
+        );
 
       if (!homeCode || !awayCode) continue;
 
-      if (stage === "Round of 32") {
-        bumpProgress(progress, homeCode, "groupBreakthrough");
-        bumpProgress(progress, awayCode, "groupBreakthrough");
-      } else if (stage === "Round of 16") {
-        bumpProgress(progress, homeCode, "best16");
-        bumpProgress(progress, awayCode, "best16");
-      } else if (stage === "Quarter-final") {
-        bumpProgress(progress, homeCode, "best8");
-        bumpProgress(progress, awayCode, "best8");
-      } else if (stage === "Semi-final") {
-        bumpProgress(progress, homeCode, "best4");
-        bumpProgress(progress, awayCode, "best4");
-      } else if (stage === "Final") {
-        bumpProgress(progress, homeCode, "runnerUp");
-        bumpProgress(progress, awayCode, "runnerUp");
-      }
+      applyStageEntryProgress(progress, stage, homeCode, awayCode);
 
       let result: SimKnockoutResult;
 
@@ -1535,39 +1866,11 @@ function buildSimulationAggregate(
       knockoutResults.set(matchNumber, result);
     }
 
-    const simulatedScores = picks
-      .map((entry) => {
-        const totalPoints = entry.countries.reduce((sum, countryCode) => {
-          const key = progress.get(countryCode) ?? "none";
-          return sum + progressPoints(key) + (winCounts.get(countryCode) ?? 0);
-        }, 0);
-
-        return {
-          name: entry.name,
-          totalPoints,
-        };
-      })
-      .sort((a, b) => b.totalPoints - a.totalPoints || a.name.localeCompare(b.name));
-
-    const topScore = simulatedScores[0]?.totalPoints ?? 0;
-    const topPlayers = simulatedScores.filter((entry) => entry.totalPoints === topScore);
-    const bottomScore =
-      simulatedScores[simulatedScores.length - 1]?.totalPoints ?? 0;
-    const bottomPlayers = simulatedScores.filter(
-      (entry) => entry.totalPoints === bottomScore,
+    accumulateSimulationLeaf(
+      { averagePoints, winShares, lastPlaceShares },
+      createParticipantTotals(progress, winCounts),
+      1,
     );
-
-    for (const entry of simulatedScores) {
-      averagePoints[entry.name] += entry.totalPoints;
-    }
-
-    for (const entry of topPlayers) {
-      winShares[entry.name] += 1 / topPlayers.length;
-    }
-
-    for (const entry of bottomPlayers) {
-      lastPlaceShares[entry.name] += 1 / bottomPlayers.length;
-    }
   }
 
   for (const name of participants) {
@@ -1676,25 +1979,7 @@ function getParticipantScores(
 }
 
 export async function getWorldCupDashboard() {
-  const url = new URL(API_URL);
-  url.searchParams.set("language", "en");
-  url.searchParams.set("count", "500");
-  url.searchParams.set("idSeason", WORLD_CUP_2026_SEASON_ID);
-
-  const response = await fetch(url, {
-    headers: {
-      Accept: "application/json",
-      "User-Agent": "Mozilla/5.0",
-    },
-    next: { revalidate: 900, tags: [FIFA_MATCHES_TAG] },
-  });
-
-  if (!response.ok) {
-    throw new Error(`Failed to fetch FIFA data: ${response.status}`);
-  }
-
-  const payload = (await response.json()) as MatchResponse;
-  const matches = payload.Results ?? [];
+  const matches = await fetchWorldCupMatches();
   const strengthProfile = await getStrengthProfileFromMatches(matches);
   const countryOwners = getCountryOwners();
 
